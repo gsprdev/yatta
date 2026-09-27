@@ -304,8 +304,10 @@ func Open(path string) (*Store, error)
 
 func (s *Store) Entries(from, to time.Time) ([]core.TimeEntry, error)
 func (s *Store) Entry(id string) (core.TimeEntry, error)
-func (s *Store) SaveEntry(e core.TimeEntry) error // rejects a locked entry
-func (s *Store) DiscardEntry(id string) error     // rejects a locked entry
+func (s *Store) SaveEntry(e core.TimeEntry) (core.TimeEntry, error) // creates when ID is ""; ErrLocked if locked
+func (s *Store) DiscardEntry(id string) error                      // ErrLocked if locked
+func (s *Store) Record(id string) (core.RemoteRecord, error)       // for the merged view
+func (s *Store) Counts() (Counts, error)                           // status-bar attention counts
 
 // UnlockedRemoteEntries returns every pending or failed entry on a remote task
 // starting on or before through: the input to PlanUpload.
@@ -321,8 +323,20 @@ func (s *Store) PurgeCounts(before time.Time) (failed, pending, unassigned int, 
 func (s *Store) Purge(before time.Time) error
 
 func (s *Store) Tasks() ([]core.Task, error)
+func (s *Store) SaveLocalTask(t core.Task) (core.Task, error)
 func (s *Store) ReconcileRemoteTasks(integration string, fetched []core.FetchedTask) error
-// ... timer, config, settings
+
+// StartTimer stops any running timer at now (returning its entry) and starts a new one.
+func (s *Store) StartTimer(taskID string, now time.Time) (*core.TimeEntry, error)
+func (s *Store) SetTimerTask(taskID string) error
+func (s *Store) StopTimer(now time.Time) (*core.TimeEntry, error)
+func (s *Store) Timer() (*core.ActiveTimer, error)
+
+func (s *Store) Policy() (core.Policy, error)
+func (s *Store) SetPolicy(p core.Policy) error
+func (s *Store) Integration() (*IntegrationConfig, error)
+func (s *Store) SetIntegration(c IntegrationConfig) error // switching type retires the old integration's tasks
+func (s *Store) ClearIntegration() error
 ```
 
 **No interface is declared here.** Where a test or a caller needs to substitute the store, the consuming package declares the narrow interface it actually uses — typically one or two methods — which is the Go convention and produces smaller seams than a mirror of the full type.
