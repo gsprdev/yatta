@@ -283,11 +283,7 @@ With create as the only remote operation, planning has no branch table: every un
 
 Execution is the thin part, and it lives in `ui` as a command, because it is I/O:
 
-```go
-func uploadCmd(st *store.Store, ad remote.Adapter, plan core.Plan) tea.Cmd
-```
-
-On confirmation, it first records the excluded units as sentinel records, then walks the upload units in order, calling the adapter's `Create` for each and persisting each result immediately. A unit whose task has departed fails without a remote call: a departed task may still exist upstream (a closed Jira issue drops out of the fetch), so calling would sometimes succeed, and `YATTA.md` requires those entries to be reassigned first. For each result: on success a record is written and every member linked to it in one transaction; on failure the error is written to each member's row, leaving them unlinked and editable. **There is no batch-level failure mode.** A rejected unit produces failed entries within an otherwise successful upload; it never aborts the run. This includes a remote-specific rejection such as an overlap constraint, which is an ordinary adapter error like any other.
+On confirmation, it first records the excluded units as sentinel records, then runs one command per upload unit, in order, each calling the adapter's `Create` and persisting each result immediately. A unit whose task has departed fails without a remote call: a departed task may still exist upstream (a closed Jira issue drops out of the fetch), so calling would sometimes succeed, and `YATTA.md` requires those entries to be reassigned first. For each result: on success a record is written and every member linked to it in one transaction; on failure the error is written to each member's row, leaving them unlinked and editable. **There is no batch-level failure mode.** A rejected unit produces failed entries within an otherwise successful upload; it never aborts the run. This includes a remote-specific rejection such as an overlap constraint, which is an ordinary adapter error like any other.
 
 Upload is modal: while it runs, the interface shows progress and accepts no edits, so what is sent is exactly what was confirmed.
 
@@ -425,7 +421,7 @@ The resting view is `modeEntries` with a status bar rendered by the root model o
 | Requirement | Component |
 |---|---|
 | Entry list, search, filter, resume-from-recent | `bubbles/list` — its built-in filtering is the search requirement, and the list is ordered most-recent-first so resume is a filter plus Enter |
-| Merged local/remote view | The entry list's detail rendering, read-only. A linked entry shows its local values alongside the record's uploaded values; under aggregation the sibling members are shown together against the one remote value, and an excluded entry is marked as such |
+| Merged local/remote view | Opening a locked entry shows it read-only with its record: the uploaded duration and note against the local time, and under aggregation every member entry. An excluded entry is marked as such. The entry list marks each entry's state |
 | Task tree picker | `bubbles/list` over a depth-flattened tree with indent prefixes, showing each remote task's label and filtering on the full ancestry path plus label, so typing `PROJ-123` finds the ticket; non-`Selectable()` tasks omitted |
 | Entry create / correct | `bubbles/textinput` for times and note, plus the picker for the task — reassociation is this same flow, not a separate one. A locked entry opens read-only |
 | Local task management | `modeTasks`: the same flattened list over local tasks only, with keys to add a child or sibling, rename, move (re-parent through the picker), and archive |
