@@ -1,2 +1,6 @@
 /yatta
 /yatta.exe
+
+# Local credentials for live tests; never commit.
+.env
+*.env
