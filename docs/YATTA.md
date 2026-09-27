@@ -153,7 +153,7 @@ Rounding and minimums are evaluated on the time a remote record will carry — a
   - Round up to minimum, or
   - Exclude it from the upload
 
-A duration that rounds to zero is always excluded, whether or not a minimum is configured.
+A duration that rounds to zero is excluded, unless a minimum with round-up behavior raises it — so with no minimum configured, zero is always excluded. Round to nearest rounds a value exactly halfway up.
 
 An excluded entry or group is not left pending. It is recorded as **handled with no upload** — a sentinel remote record with nothing sent — and the entries are locked like any uploaded entry. Exclusions are listed on the upload confirmation before anything is sent. Leaving them pending instead would make them reappear at every upload and keep the pending count from ever reaching zero.
 
@@ -247,7 +247,7 @@ This iteration is done when, against each of Jira, Redmine, and Toggl, a user ca
 - **Discard before upload; purge by date after.** An entry not yet uploaded can be discarded. Uploaded entries are never deleted individually; the user clears out old local records by purging every entry before a chosen date. Purge covers every state, and warns first when the range holds entries never uploaded — louder for failed entries than for pending or unassigned ones.
 - **A task is required only for upload.** Unassigned entries and timers are allowed and counted as needing attention, since recording first and classifying later is the lowest-friction path.
 - **Today's running total is in scope.** It belongs to the always-visible working surface, not to reporting.
-- **Zero after rounding is excluded.** It gets the same sentinel as a below-minimum exclusion.
+- **Zero after rounding is excluded** unless a round-up minimum raises it. It gets the same sentinel as a below-minimum exclusion.
 - **Entries on departed tasks fail at upload.** They are not filtered out beforehand; the failure puts them in the error list, where the user reassigns them.
 - **Repeated uploads are independent.** Two uploads on the same day produce two records for the same task and day. This is expected, not handled.
 - **Known limitation: duplicate after a crash.** If YATTA stops after the remote accepts a record but before the result is saved locally, those entries stay pending and the next upload sends them again. No reasonable prevention exists for a create-only interface; the user corrects the duplicate in the remote system.

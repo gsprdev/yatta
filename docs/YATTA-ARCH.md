@@ -240,7 +240,7 @@ type Unit struct {
 func Group(entries []TimeEntry, p Policy, loc *time.Location) (upload, excluded []Unit)
 ```
 
-Rounding and the minimum are applied once, to the unit's summed raw duration. Individual entries are never rounded. A unit that rounds to zero is excluded whether or not a minimum is set.
+Rounding and the minimum are applied once, to the unit's summed raw duration. Individual entries are never rounded. A unit that rounds to zero is excluded unless a round-up minimum raises it.
 
 A unit's note is built from its members in start order: trim each note, drop empty and duplicate notes, add a trailing period to every note but the last unless it already ends with one, and join with a single space.
 
@@ -265,6 +265,17 @@ type Plan struct {
 // been uploaded or excluded is finished.
 func PlanUpload(entries []TimeEntry, p Policy, loc *time.Location, through time.Time) Plan
 ```
+
+### Helpers
+
+```go
+func (p Policy) Validate() error // settings are validated on load; Group and PlanUpload require a valid policy
+func CombineNotes(notes []string) string
+func EndOfDay(t time.Time, loc *time.Location) time.Time // the upload bound for a chosen local date
+func DayTotal(entries []TimeEntry, timer *ActiveTimer, now time.Time, loc *time.Location) time.Duration
+```
+
+`DayTotal` backs today's running total in the status bar. It counts only the part of an entry, or of the running timer, that falls inside the local day, and it takes `now` as an argument like everything else in `core`.
 
 With create as the only remote operation, planning has no branch table: every unit is either uploaded or excluded. Because it is a function over values, every rounding, minimum, and day-boundary case is an ordinary table entry in a test file.
 
@@ -485,6 +496,7 @@ The database is `yatta.db` in the platform's per-user data directory: `$XDG_DATA
 - **Hand-written SQL, not `sqlc`.** The store is small, and the rules it must hold (locking, nil-`Upload`, reconciliation) are covered by store tests against real SQLite, which typed query code would not replace. No code-generation step in the build.
 - **Hand-rolled migration runner** over `PRAGMA user_version`: about forty lines, no dependency.
 - **Domain package stays `internal/core`.**
+- **An over-long note is an ordinary upload failure.** If the remote rejects a combined note for length, that unit fails like any other adapter error and lands in the error list; the user shortens the notes. No truncation or special handling.
 - **Below-minimum exclusions are surfaced at upload confirmation and recorded as sentinel records.** Recording them locks the entries and takes them out of the pending count; surfacing them means nothing is excluded without the user seeing it.
 - **Upload is modal and blocking.** No edits race the upload, so no check is needed that an entry changed between planning and persisting its result.
 - **`net/http` rather than vendor SDKs** for all three integrations.
@@ -494,4 +506,4 @@ The database is `yatta.db` in the platform's per-user data directory: `$XDG_DATA
 
 ## Open Questions
 
-- **Note length limits.** A combined note can exceed a remote's field limit (Jira worklog comment, Toggl description, Redmine comment). Truncate in the adapter with a marker, or fail the unit so the user shortens the notes?
+None at present.
