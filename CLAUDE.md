@@ -12,24 +12,24 @@ YATTA is a local-first, single-user terminal time tracker in Go, with optional u
 
 If code and a document disagree, the document is presumed right and the code is a bug — unless implementation proved the document wrong, in which case **say so and update the document in the same change**. Never leave the two in conflict.
 
-## Do not re-litigate
+## Resolved Decisions and Open Questions
 
-Each document ends with **Resolved Decisions**. Those questions are closed with recorded reasoning. Do not reopen one because a different approach looks cleaner in the moment; if implementation surfaces genuinely new information, raise it explicitly rather than quietly building the alternative.
+Each document ends with **Resolved Decisions** and **Open Questions**. Resolved Decisions record the current thinking and its reasons; they are not locked. When implementation or discussion shows one is wrong, say so and change the document in the same change as the code.
 
-Each document also ends with **Open Questions**. Those are the live agenda. Do not silently pick an answer to one in passing — if a task requires an answer, name the question, state the choice and why, and record it in Resolved Decisions.
+Open Questions are the live agenda. If a task needs an answer to one, name the question and the choice you made, and move it to Resolved Decisions rather than answering it silently in code.
 
 ## Invariants that must not be violated
 
-- **Local records are never modified by the upload process.** Rounding and aggregation apply to a derived copy. This is the product's central promise.
+- **Local records are never modified by the upload process.** Rounding and aggregation apply to a derived copy. Upload only links an entry to the record it produced. This is the product's central promise.
+- **Upload is one-way and final.** YATTA creates remote records and never updates or deletes them. An uploaded (or excluded) entry is locked; corrections happen in the remote system.
 - **No cloud sync, hosted backend, or multi-machine replication.** Data lives on one machine. This rules out whole categories of feature; do not add a network listener, a sync path, or a remote datastore.
 - **Existing time entries are never fetched from a remote system.** Remote reads are for task hierarchies only.
 - **`internal/core` imports only the standard library.** No UI, database, or HTTP types. Enforce it in review.
 - **Rounding, aggregation, and upload planning stay pure.** `core.Group` and `core.PlanUpload` take values and return values — no database, no network, no ambient clock or timezone. All I/O lives at the edges.
-- **`core.PlanUpload` receives every remote-task entry in the bound, in any phase**, including already-uploaded ones. Passing only pending entries undercounts aggregate records. There is a test for this; do not "optimize" it away.
-- **A remote record's state is shared by every entry linked to it.** Aggregated siblings always agree because the store materializes their phase from the record.
+- **Rounding and minimums apply to the summed duration of a unit**, never to individual entries before summing.
 - **No whole-upload abort.** One failed operation produces failed entries inside an otherwise successful upload. Per-operation results, always.
 - **Credentials live in the OS keyring, never in SQLite.** The database stores a lookup key only.
-- **A remote task that disappears upstream is soft-deleted, never dropped.** Entries keep their reference and are surfaced for reassociation.
+- **A remote task that disappears upstream is soft-deleted, never dropped.** Entries keep their reference; those not yet uploaded are surfaced for reassociation.
 
 ## Conventions
 

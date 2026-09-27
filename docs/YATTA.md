@@ -37,7 +37,7 @@ Note that path 1 would require its own security assessment rather than inheritin
 - **Minimize friction.** Reducing friction is a win for everyone — easier entry leads to more accurate data.
 - **Remote systems are optional.** Zero or one remote integrations may be active at a time.
 - **Local data is never overwritten by remote systems.** Existing time entries are never fetched from a remote source.
-- **Upload is deliberate.** Pending remote transactions accumulate as the user works, but uploading to a remote system is always a conscious user action.
+- **Upload is deliberate and final.** Pending entries accumulate as the user works, but uploading to a remote system is always a conscious user action — the point at which the user has reviewed what is pending and commits to it. Upload is one-way: once time is uploaded, the remote system is its system of record, and any later correction happens there.
 
 ---
 
@@ -56,7 +56,7 @@ YATTA is one persistent application, not a set of invocations. Because it is exp
 
 - **The current timer** — what is running, against which task, and for how long. This is the single most-consulted piece of information in the product and it must never require a keystroke to see.
 - **Today's accumulated time** — a running total for the current local day. This is not reporting or analytics; it is the ambient feedback that makes under-recording visible while there is still time to fix it.
-- **Attention indicators** — counts for pending uploads, failed uploads, and entries whose remote task has departed.
+- **Attention indicators** — counts for pending uploads, failed uploads, and not-yet-uploaded entries whose remote task has departed.
 
 Everything else is reached by keystroke from this resting view.
 
@@ -67,21 +67,21 @@ Everything else is reached by keystroke from this resting view.
 - Each entry **should** have an associated task.
 - Each entry **may** have a free-text note.
 - The UI works exclusively with **local records**. All editing, display, and interaction is against the local copy.
-- Entries can be freely edited or deleted up until they have been uploaded to a remote system.
+- Entries can be freely edited until they have been uploaded. Once uploaded, an entry is locked: it remains visible for review and recall, but it cannot be changed.
+- YATTA does not delete individual entries. Local records do have a natural lifespan once their time has been reported, but when they stop being useful is the user's call, so cleanup is a deliberate **purge** of everything before a user-chosen date.
 - **Search and recall are primary interactions, not conveniences.** Finding an earlier entry, filtering the list, and resuming a recent task are among the most frequent actions in daily use — a timer is far more often restarted against something already tracked than created from nothing. Filtering and resume-from-recent must be immediate.
-- Upload failures must be discoverable. YATTA provides an **error list** enumerating entries whose last upload failed, each with a *go-to* action that jumps to the affected entry in the primary time entry interface. The error list is purely for discovery and navigation — it is not a sync queue, and every correction is made on the entry itself in the primary UI. When aggregation links several entries to one failed remote record, all of them appear in the error list, since all are affected by the same failure.
+- Upload failures must be discoverable. YATTA provides an **error list** enumerating entries whose last upload failed, each with a *go-to* action that jumps to the affected entry in the primary time entry interface. The error list is purely for discovery and navigation — it is not a sync queue, and every correction is made on the entry itself in the primary UI. A failed entry was never uploaded, so it is still editable. When aggregation combined several entries into one failed upload, all of them appear in the error list, since all are affected by the same failure.
 
 ### Local and Remote Records
 
-Local records and remote records are stored separately and linked by reference. The local record is what actually happened; the remote record is the business-facing projection of it. Upload policy — rounding and, optionally, aggregation — determines the shape of that projection. Keeping both allows the local timeline to remain honest and recognizable to the user, while the remote representation reflects the form that downstream consumers require.
+Local records and remote records are stored separately and linked by reference. The local record is what actually happened; the remote record is the business-facing projection of it, written once at upload. Upload policy — rounding and, optionally, aggregation — determines the shape of that projection. Keeping both allows the local timeline to remain honest and recognizable to the user, while the remote representation reflects the form that downstream consumers require.
 
-- **Local record:** The user's authoritative copy. Always present. What the UI displays and the user edits.
-- **Remote record:** A stored representation of what was actually uploaded to the remote system, including any rounding or aggregation applied at upload time. Present only after a successful upload.
-- A local record may be linked to a remote record. When linked, both can be represented together in a merged view — showing, for example, that a 23-minute local entry was uploaded as 30 minutes.
-- **A remote record may summarize several local records, not just one** — e.g. three local entries against the same task on the same day, rolled into a single Jira worklog. Each local record retains its own identity, timeline, and editability; only the remote projection combines them. The merged view shows the whole group together against the one remote value.
-- The local record is never modified by the upload process. The remote record captures the uploaded values, including any fidelity loss from rounding or aggregation.
-- State tracking (pending, uploaded, failed) is relative to the remote record. When a remote record summarizes multiple local records, that state applies to the group as a whole — every member shares the same fate. Before a group's first successful upload, an individual local record not yet linked to any remote record tracks its own pending/failed state directly, since no shared remote record exists yet to hold it.
-- If a previously uploaded entry is edited locally, it becomes pending upload again (as an Update). The remote record continues to reflect the last successfully uploaded state until the next upload. The UI makes this divergence visible. The same applies when a member is added to or removed from an already-uploaded aggregate group: the shared remote record — and therefore every member linked to it, including ones that were not themselves touched — becomes pending again.
+- **Local record:** The user's authoritative copy of what happened. What the UI displays and the user edits, until it is uploaded.
+- **Remote record:** A stored representation of what was actually uploaded, including any rounding or aggregation applied. **A remote record originates from one or more local records** — e.g. three local entries against the same task on the same day, rolled into a single Jira worklog. Its duration is the combined time of those entries with the upload policy applied, and its note is the concatenation of the distinct notes across them.
+- A local record linked to a remote record is shown together with it in a merged view — showing, for example, that a 23-minute local entry was uploaded as 30 minutes, or that three entries became one worklog. The merged view is for review only.
+- The upload process never changes an entry's time, task, or note. It only links the entry to the record it produced, which is what locks it.
+- **Upload is one-way.** YATTA creates remote records and never updates or deletes them. Once uploaded, the remote system is the system of record for that time; a correction is made there, not in YATTA.
+- Every remote-bound entry is in one of three conditions: **pending** (not yet uploaded, editable), **failed** (an upload was attempted and rejected; still editable, retried on the next upload), or **uploaded** (linked to a remote record, locked). An entry excluded by a minimum-duration rule counts as handled — see Rounding.
 
 ### Task Hierarchies
 
@@ -94,7 +94,7 @@ Local records and remote records are stored separately and linked by reference. 
   - Toggl: Workspace → Client → Project → Task
 - The local and remote task trees are **distinct namespaces** — an entry is associated with either a local task or a remote task, never both.
 - **A remote task that disappears is never silently dropped.** If a re-fetch removes a remote task that existing entries point to, the association is preserved and the affected entries are flagged for the user's attention rather than quietly losing their reference. The user can then reassociate them with a current task. What the time was originally recorded against remains visible until they do — consistent with YATTA's refusal to lose source truth.
-- **Reassociation is not a distinct feature.** Changing an entry's task is the same act as choosing it in the first place — the ordinary task selector on the entry. If the entry had already been uploaded under its previous remote task, changing to a different task means the prior remote record is deleted on the next upload (and, if the new task is also remote, a new record created in its place) — or, under aggregation, the entry simply stops being a member of its old group.
+- **Reassociation is not a distinct feature.** Changing an entry's task is the same act as choosing it in the first place — the ordinary task selector on the entry. It applies to entries not yet uploaded; an uploaded entry against a departed task is history, needs no action, and is not flagged.
 
 ### Remote Integration (0 or 1)
 
@@ -105,27 +105,29 @@ Local records and remote records are stored separately and linked by reference. 
 - Only entries associated with tasks originating from the remote system are eligible for upload. Entries on local tasks remain local-only and are never uploaded.
 - An entry maps to at most one remote record, matching the single-active-integration principle.
 
-### Pending Transactions
+### Pending Entries
 
-Unsubmitted remote operations are represented as **pending transactions** — a set of intended Create, Update, or Delete operations on individual time entries or, under aggregation, on groups of them.
+Entries on remote tasks that have not yet been uploaded are **pending**. There is no separate log of intended operations: what gets uploaded is derived from the pending entries as they stand at upload time.
 
-- A transaction set is not a log of every intermediate change. If an entry is created, edited three times, and then deleted before upload, the net result is nothing to upload.
 - The purpose of deferred upload is to let the user freely edit local data without causing volatility in the remote system of record. The remote system only ever sees clean, intentional snapshots.
 - Upload is always explicit. The user decides when pending entries are ready to send.
-- There is no dedicated "pending transactions" view. Pending state is surfaced as an indicator on entries within the normal time entry interface, plus a count in the always-visible status area.
-- Once an entry (or, under aggregation, a group) is uploaded, the remote-assigned identifier and the remote record are stored locally, linked to the local entry or entries.
+- There is no dedicated "pending" view. Pending state is surfaced as an indicator on entries within the normal time entry interface, plus a count in the always-visible status area.
+- Once entries are uploaded, the remote-assigned identifier and the remote record are stored locally, linked to the local entry or entries.
 
 ### Upload Scope
 
 - An upload action is not tied to any particular reporting period.
 - The user may optionally specify an **end date (inclusive)** to limit which pending entries are included in a given upload — for example, uploading only through last Sunday while leaving the current week pending.
 - No minimum scope is implied; the default is all pending entries.
+- Upload is a blocking operation. While it runs, the user watches its per-entry results arrive and cannot edit entries. One rejected record does not abort the rest: each record succeeds or fails on its own.
 
 ---
 
 ## Rounding
 
-Rounding applies only at upload time and only to remote-bound entries. Rounding is applied to a derived copy of each entry before it is sent; the result is stored as the **remote record**. The local record is never modified by the upload process.
+Rounding applies only at upload time and only to remote-bound time. It is applied to a derived copy before it is sent; the result is stored as the **remote record**. The local record is never modified by the upload process.
+
+Rounding and minimums are evaluated on the time a remote record will carry — a single entry's duration, or under aggregation the **sum of the group's raw durations**. Individual entries are never rounded before summing.
 
 ### Rounding Options
 
@@ -145,22 +147,24 @@ Rounding applies only at upload time and only to remote-bound entries. Rounding 
 **Minimum duration** (optional):
 
 - A minimum duration threshold may be configured.
-- If an entry (or, under aggregation, a group's summed duration) falls below the minimum after rounding:
+- If the time (after rounding) falls below the minimum:
   - Round up to minimum, or
-  - Exclude the entry (or group) from the upload (local records are preserved)
+  - Exclude it from the upload
 
-Entries excluded by a minimum-duration rule are reported at upload confirmation. An entry that is silently skipped would remain pending indefinitely with no visible cause, which is precisely the kind of quiet data loss the product exists to prevent.
+An excluded entry or group is not left pending. It is recorded as **handled with no upload** — a sentinel remote record with nothing sent — and the entries are locked like any uploaded entry. Exclusions are listed on the upload confirmation before anything is sent. Leaving them pending instead would make them reappear at every upload and keep the pending count from ever reaching zero.
 
 ### Aggregation
 
-Aggregation combines multiple local entries into a single remote record at upload time — for example, three entries against the same task on the same day, uploaded as one Jira worklog. This happens purely in the upload/rounding transform: local records are never merged, edited, or deleted by aggregation, and each keeps its own identity and timeline in the UI. What changes is only how many local records a given remote record represents.
+Aggregation combines multiple local entries into a single remote record at upload time — for example, three entries against the same task on the same day, uploaded as one Jira worklog. This happens purely in the upload transform: local records are never merged or edited by aggregation, and each keeps its own identity and timeline in the UI.
 
 Aggregation exists because remote systems often impose conventions that have nothing to do with how the work was actually tracked — for example, a company Jira convention of one worklog entry per day per issue, rounded to the nearest 15 minutes, minimum 15 minutes. That convention is a property of the remote system, not of the source data, and it may change over time without any change to the underlying local records — which is exactly why rounding and aggregation are applied only at the upload boundary rather than to local records.
 
 **Aggregation key** (select one):
 
 - None *(default)* — every local entry produces its own remote record.
-- By task and day — local entries targeting the same remote task, falling on the same local calendar day, are grouped into one remote record.
+- By task and day — pending entries targeting the same remote task, falling on the same local calendar day, are grouped into one remote record.
+
+An aggregate record's start is the earliest member's start; its duration is the group's summed duration with the policy applied; its note is the distinct member notes concatenated in start order.
 
 "Day" is the local calendar day (device timezone) at the time of upload — not the UTC date the instant is stored under. This is consistent with local timezone being applied only at the UI render/interaction boundary and never persisted, but it is worth stating explicitly, since a grouping boundary near midnight is exactly the kind of place a UTC/local mismatch would silently misgroup entries.
 
@@ -172,8 +176,8 @@ Aggregation is a deliberately narrow concern, separate from full cross-system ti
 
 - The schema must accommodate optional fields driven by integration type.
 - Remote task records carry integration-specific metadata; local tasks do not.
-- The representation of pending transactions is an implementation detail and does not need to mirror queue semantics.
-- Local and remote entry records are stored separately and linked by reference. The remote record preserves the uploaded values (post-rounding, post-aggregation); the local record is the user's editable copy. Under aggregation, several local records may link to the same remote record.
+- Pending state is derived from the entries themselves; there is no operation queue.
+- Local and remote entry records are stored separately and linked by reference. The remote record preserves the uploaded values (post-aggregation, post-rounding); the local record is the user's copy, editable until linked. Under aggregation, several local records link to the same remote record.
 
 ---
 
@@ -187,10 +191,11 @@ Aggregation is a deliberately narrow concern, separate from full cross-system ti
 | Search, filter, and resume-from-recent over entries | Cloud sync, hosted backend, or any multi-machine replication |
 | Hierarchical local task management | Browser-based interface |
 | One optional remote integration | Reading existing entries from remote |
-| Deliberate upload with optional date bound | Reporting / analytics UI beyond the current-day total |
+| Deliberate, one-way upload with optional date bound | Reporting / analytics UI beyond the current-day total |
 | Rounding at upload time (stored as remote record) | Full cross-system timesheet reporting (e.g. summarizing ticketed and non-ticketed work into one NetSuite-style total) |
 | Aggregation at upload time (by task + day, into the remote record) | Scriptable or user-defined rounding rules |
-| Merged local/remote view per entry (and per aggregate group) | Aggregation, merging, or editing of local records themselves |
+| Merged local/remote view per entry (and per aggregate group), read-only | Aggregation, merging, or editing of local records themselves |
+| Purge of local records before a chosen date | Updating or deleting time already uploaded — corrected in the remote system |
 
 ---
 
@@ -217,7 +222,11 @@ Toggl is intentionally included as a third integration type — it is a time-tra
 - **Implementation language and toolkit: Go with Bubble Tea.** The interface is dominated by list, filter, select, and edit interactions, and Bubble Tea's component library supplies all of them — including list filtering, which maps directly onto the search and recall requirement. Go's standard library covers the three HTTP integrations without an async runtime, and its message-passing model maps cleanly onto per-operation upload results. Dependency weight also favors Go: a pure-Go SQLite driver and standard-library HTTP yield a small dependency tree and a single static binary. Rust with Ratatui was the principal alternative and remains a strong fit for the domain model, but it would require building the interactive form and input layer by hand and carries a larger transitive dependency graph for the same feature set. The cost of Go is a weaker type system for expressing the domain's variants; this is accepted, mitigated by exhaustiveness linting where unions remain, and offset by the fact that the most intricate logic in the product is pure and I/O-free and therefore well covered by table-driven tests. See `YATTA-ARCH.md`.
 - **Multiple simultaneous remotes, or one entry feeding several remotes:** Rejected. A single local entry maps to at most one remote, matching the "zero or one active integrations" principle. Letting one entry feed several remotes at once (e.g. Jira and NetSuite together) would be difficult to build an interface for, track, or reason about — and it isn't what the underlying need actually calls for.
 - **Full cross-system timesheet reporting (the NetSuite case):** Out of scope, and deliberately not modeled as an extension of the remote upload mechanism. Summarizing ticketed and non-ticketed work into one full total belongs to a distinct reporting/summarization capability, not to the entry-to-remote-record relationship — the same underlying reason two separate systems (e.g. Jira and NetSuite) exist for it today rather than one.
-- **Aggregation start/anchor:** An aggregate remote record's reported start is the earliest contributing local entry's start; its duration is the sum of the group's rounded durations.
+- **Upload is one-way and final.** YATTA only ever creates remote records. An uploaded entry is locked, and corrections to uploaded time are made in the remote system of record. This removes remote update and delete entirely, and with it the questions of re-uploading edited groups, stale remote copies, and records whose members have left.
+- **No per-entry deletion; purge by date.** Entries are not deleted individually. The user clears out old local records by purging everything before a chosen date.
+- **Aggregation start/anchor:** An aggregate remote record's reported start is the earliest contributing local entry's start; its duration is the sum of the members' raw durations, with rounding and minimum applied once to that sum. Its note is the distinct member notes concatenated.
+- **Below-minimum exclusion is recorded, not deferred.** An excluded entry or group gets a sentinel remote record marking it handled with nothing sent, so it does not stay pending forever.
+- **Upload blocks.** Entries cannot be edited while an upload runs, so what is uploaded is exactly what was confirmed.
 - **Aggregation day boundary:** "Day" for the task+day grouping key is the local calendar day (device timezone) at upload time, not the UTC date the instant is stored under.
 - **Upload bound granularity:** The optional upload bound is an inclusive local *date*, normalized to end-of-day. Honoring it as a date rather than an arbitrary instant guarantees it can never bisect a task+day aggregation group.
 - **Cross-entry/cross-group overlap validation:** Not enforced by rounding or upload logic, and there is no whole-upload abort behavior for it. Rounding and aggregation may produce entries or groups with overlapping time ranges without complaint — most remotes (Jira included) care about total duration per task/day, not literal time-of-day precision, so a generic overlap check would solve a problem the target integrations don't have, and would force awkward, often-unresolvable local massaging on top of a projection that is already an approximation once aggregation is summarizing several entries into one span. If a remote genuinely rejects overlapping entries, that validation and any conflict resolution belongs in that remote's own adapter — a rejection there is an ordinary upload failure for the affected record, handled the same as any other adapter error, not a special whole-upload abort.
@@ -225,4 +234,8 @@ Toggl is intentionally included as a third integration type — it is a time-tra
 ## Open Questions
 
 - **Is today's running total genuinely in scope?** It is specified above as a property of the always-present working surface rather than as reporting, on the grounds that it changes recording behavior while the day is still correctable. The boundary against "reporting / analytics UI" is real but thin, and the answer determines whether a week-to-date total or a per-task daily breakdown is a natural extension or a scope violation. If the total is judged to be reporting, it should be removed from Core Concepts and Scope Boundaries together.
-- **What happens when an already-uploaded group falls below the minimum duration after an edit?** The policy says exclude, but the group already has a remote record. Deleting it upstream is the consistent reading; leaving it stale contradicts "divergence must be visible"; treating the exclusion as inapplicable to settled groups is the least surprising but the least principled.
+- **Can a pending entry be discarded?** With no per-entry deletion, an entry recorded by mistake can only be edited, never removed, until a purge reaches its date. A mistaken remote-task entry would have to be uploaded or moved to a local task. Allowing discard of pending entries only would not touch anything the remote system has seen.
+- **Late entries on an already-uploaded day.** Under task+day aggregation, an entry added for a task and day that were already uploaded produces a second remote record for that day, which breaks a one-worklog-per-day convention. Options: accept it; warn at confirmation; or default the upload bound to yesterday, so the current day is not uploaded while still being worked.
+- **What purge removes.** Only uploaded entries and entries on local tasks, or also pending and failed entries before the date? Purging unuploaded remote time loses it silently.
+- **Rounding to zero with no minimum set.** A short entry rounded down, or to nearest, can reach zero. Treat zero as below any minimum and record it as excluded, or upload a zero-duration record, which most remotes reject?
+- **Is a task required?** "Each entry *should* have an associated task" reads as optional, but the data model requires one, including for a running timer. Starting a timer before choosing what it is for is the lowest-friction path.

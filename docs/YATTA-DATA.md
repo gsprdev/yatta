@@ -66,16 +66,14 @@ The cost is a wider table with columns that apply to only one kind of row, and o
 **Reconciliation on fetch:**
 
 - Rows present in the fetch are upserted on `(integration, native_id)`; a previously departed row that reappears has `departed_at` cleared.
-- Rows absent from the fetch but still referenced — by a `time_entries` row, a `remote_records` row, an `orphaned_remote_records` row, or `active_timer` — are soft-deleted with `departed_at = now`. They stay resolvable for historical display and are excluded from the picker.
-- Rows absent from the fetch and unreferenced are hard-deleted.
-
-Orphaned records count as referents: an orphan's `target_task_id` supplies the delete context for an upstream call that has not happened yet, so hard-deleting that task would break a deletion still owed to the remote system.
+- Rows absent from the fetch but still referenced — by a `time_entries` row, a `remote_records` row, or `active_timer` — are soft-deleted with `departed_at = now`. They stay resolvable for historical display and are excluded from the picker.
+- Rows absent from the fetch and unreferenced are hard-deleted. A departed row whose last reference is purged is therefore removed by the next reconciliation.
 
 ---
 
 ### `time_entries`
 
-The authoritative local record. Never modified by the upload process.
+The authoritative local record. Editable until it is linked to a remote record, then locked. The upload process only ever sets the link.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -84,80 +82,57 @@ The authoritative local record. Never modified by the upload process.
 | `duration_s` | INTEGER NOT NULL | block length in seconds |
 | `task_id` | TEXT NOT NULL | `REFERENCES tasks(id)` |
 | `note` | TEXT | nullable |
-| `remote_record_id` | TEXT | nullable; `REFERENCES remote_records(id)`. NULL for entries on local tasks, and for remote-task entries not yet part of a successful upload. **Several rows may share one value** — that is how aggregation is represented. |
-| `unlinked_phase` | TEXT | nullable; `'pending'` \| `'failed'`. Meaningful **only** while `remote_record_id IS NULL` |
-| `unlinked_error` | TEXT | nullable; set when `unlinked_phase = 'failed'` |
+| `remote_record_id` | TEXT | nullable; `REFERENCES remote_records(id)`. NULL until the entry is uploaded or excluded; non-null ⇒ locked. **Several rows may share one value** — that is how aggregation is represented. |
+| `upload_error` | TEXT | nullable; the error from the last failed upload attempt. Meaningful **only** while `remote_record_id IS NULL` |
 | `created_at` | INTEGER NOT NULL | Unix seconds |
 | `updated_at` | INTEGER NOT NULL | Unix seconds |
-
-The `unlinked_` prefix states in the column name when these apply, so a reader does not have to remember the rule. Once an entry is linked to a record, its phase and error come from that record, which is what keeps aggregated siblings in agreement.
 
 **Constraints:**
 
 ```sql
 CHECK (duration_s > 0)
-CHECK (remote_record_id IS NULL OR (unlinked_phase IS NULL AND unlinked_error IS NULL))
-CHECK (unlinked_phase IS NULL OR unlinked_phase IN ('pending','failed'))
+CHECK (remote_record_id IS NULL OR upload_error IS NULL)
 ```
 
-The second constraint makes the mutual exclusion structural: a linked entry cannot carry a stale phase, because it cannot carry one at all.
+The second constraint makes the mutual exclusion structural: a linked entry cannot carry a stale error, because it cannot carry one at all. Linking and clearing the error happen in the same statement.
 
 Application-enforced:
 
-- An entry whose task is local has `remote_record_id`, `unlinked_phase`, and `unlinked_error` all NULL. This requires a cross-table check, so it is a store invariant with a test rather than a `CHECK`.
+- An entry whose task is local has `remote_record_id` and `upload_error` both NULL. This requires a cross-table check, so it is a store invariant with a test rather than a `CHECK`.
+- A linked entry is never updated. The store rejects the write; see Open Questions on making this a trigger.
 
 **Reconstructing `core.TimeEntry.Upload`:**
 
-| Task | `remote_record_id` | Source of phase | Resulting `UploadState` |
+| Task | `remote_record_id` | Other | Resulting `UploadState` |
 |---|---|---|---|
 | local | NULL | — | `nil` |
-| remote | NULL | `unlinked_phase` NULL or `'pending'` | `{Pending, "", ""}` |
-| remote | NULL | `unlinked_phase = 'failed'` | `{Failed, unlinked_error, ""}` |
-| remote | set | `remote_records.phase = 'uploaded'` | `{Uploaded, "", recordID}` |
-| remote | set | `remote_records.phase = 'pending'` | `{Pending, "", recordID}` — diverged |
-| remote | set | `remote_records.phase = 'failed'` | `{Failed, record.error, recordID}` |
-
-Every row sharing a `remote_record_id` reads its phase from the same `remote_records` row, which is the mechanism behind "the group shares one fate."
+| remote | NULL | `upload_error` NULL | `{Pending, "", ""}` |
+| remote | NULL | `upload_error` set | `{Failed, upload_error, ""}` |
+| remote | set | `remote_records.remote_id` set | `{Uploaded, "", recordID}` |
+| remote | set | `remote_records.remote_id` NULL | `{Excluded, "", recordID}` |
 
 ---
 
 ### `remote_records`
 
-What was actually sent — the post-rounding, post-aggregation projection. A row may be referenced by several `time_entries` rows.
+What was actually sent — the post-aggregation, post-rounding projection — or, for an exclusion, the sentinel recording that nothing was sent. Written once, on success or exclusion, and never modified. A row may be referenced by several `time_entries` rows.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | TEXT PK | UUID |
-| `remote_id` | TEXT NOT NULL | opaque identifier from the remote system; interpreted only by the adapter |
+| `remote_id` | TEXT | opaque identifier from the remote system; interpreted only by the adapter. **NULL ⇒ excluded sentinel**: handled, nothing uploaded |
 | `integration` | TEXT NOT NULL | `'jira'` \| `'redmine'` \| `'toggl'` |
 | `target_task_id` | TEXT NOT NULL | `REFERENCES tasks(id)`; the task this record was uploaded under |
-| `uploaded_start` | INTEGER NOT NULL | Unix seconds, post-rounding — earliest member's rounded start |
-| `uploaded_duration_s` | INTEGER NOT NULL | seconds, post-rounding — sum of the group's rounded durations |
-| `phase` | TEXT NOT NULL | `'uploaded'` \| `'pending'` \| `'failed'` — a group-level fact |
-| `error` | TEXT | nullable; set when `phase = 'failed'` |
-| `uploaded_at` | INTEGER NOT NULL | Unix seconds of the last successful upload |
+| `uploaded_start` | INTEGER NOT NULL | Unix seconds — earliest member's start |
+| `uploaded_duration_s` | INTEGER NOT NULL | seconds, the members' summed duration with the policy applied; for a sentinel, the value that fell below the minimum |
+| `note` | TEXT | nullable; distinct member notes, concatenated |
+| `created_at` | INTEGER NOT NULL | Unix seconds of the upload or exclusion |
 
 **Notes:**
 
+- There is no phase or error column. A row exists only once its upload succeeded or its exclusion was confirmed; failures stay on the entries, which remain unlinked and editable.
 - No foreign key points from here back to a single entry, since there may be several.
-- Editing, adding, or removing a member sets `phase = 'pending'` **at the moment of the local change**, not deferred to the next upload attempt, so divergence is visible immediately in every linked member's derived status.
-- Group membership is never stored as a list. Re-uploading a `pending` or `failed` record recomputes `uploaded_start` and `uploaded_duration_s` from whichever entries currently target this record's task and day, and upserts in place, keeping `id` and `remote_id`.
-- **Not** cascade-deleted with its members. When the last entry linking to a record is deleted or reassociated away, the record moves to `orphaned_remote_records` so its upstream deletion still happens. While other members remain, it is recomputed and updated in place instead.
-
----
-
-### `orphaned_remote_records`
-
-Records that still exist upstream but that no local entry targets any more. These are deletions awaiting the next upload, decoupled from `time_entries` precisely because the entries may be gone.
-
-| Column | Type | Notes |
-|---|---|---|
-| `remote_id` | TEXT PK | the upstream record to delete |
-| `integration` | TEXT NOT NULL | |
-| `target_task_id` | TEXT NOT NULL | `REFERENCES tasks(id)`; supplies delete context, e.g. the Jira issue |
-| `orphaned_at` | INTEGER NOT NULL | Unix seconds |
-
-A record is orphaned only when its **last** member leaves. On upload each row is deleted upstream via the adapter, then removed here; a failed deletion stays for the next attempt. Because `target_task_id` may reference a departed task, that reference must stay resolvable — which is why orphans count as referents during reconciliation.
+- Group membership is not stored as a list; it is the set of entries whose `remote_record_id` points here, fixed at upload.
 
 ---
 
@@ -215,16 +190,21 @@ CREATE INDEX idx_entries_start          ON time_entries(start DESC);
 CREATE INDEX idx_entries_task           ON time_entries(task_id);
 CREATE INDEX idx_entries_record         ON time_entries(remote_record_id)
                                         WHERE remote_record_id IS NOT NULL;
-CREATE INDEX idx_entries_unlinked_phase ON time_entries(unlinked_phase)
-                                        WHERE unlinked_phase IS NOT NULL;
-CREATE INDEX idx_records_phase          ON remote_records(phase) WHERE phase <> 'uploaded';
+CREATE INDEX idx_entries_unlinked       ON time_entries(task_id)
+                                        WHERE remote_record_id IS NULL;
 CREATE INDEX idx_tasks_parent           ON tasks(parent_id);
 CREATE INDEX idx_tasks_departed         ON tasks(departed_at) WHERE departed_at IS NOT NULL;
 CREATE UNIQUE INDEX idx_tasks_native    ON tasks(integration, native_id)
                                         WHERE integration IS NOT NULL;
 ```
 
-`idx_entries_start DESC` backs the resting view, which is the most-recent-first list. `idx_records_phase` and `idx_entries_unlinked_phase` back the pending and failed counts in the always-visible status bar, which are recomputed on every mutation. `idx_tasks_native` is what makes reconciliation an upsert.
+`idx_entries_start DESC` backs the resting view, which is the most-recent-first list. `idx_entries_unlinked` backs the pending, failed, and departed counts in the always-visible status bar, which are recomputed on every mutation. `idx_tasks_native` is what makes reconciliation an upsert.
+
+---
+
+## Purge
+
+The user removes old local data by choosing a cutoff date. Purge deletes `time_entries` starting before that local date, then any `remote_records` no longer referenced by an entry, in one transaction. Tasks are not purged directly: a departed remote task left unreferenced is hard-deleted by the next reconciliation, and local tasks are managed by the user. Which entries a purge may remove is an open question in `YATTA.md`.
 
 ---
 
@@ -246,14 +226,14 @@ Each file is applied in a transaction, with `user_version` bumped in the same tr
 
 - **One `tasks` table for local and remote tasks.** Makes `time_entries.task_id` an enforced foreign key, and makes local↔remote reassociation an ordinary update. Costs nullable columns and leaves namespace separation to the application layer.
 - **Unix seconds for instants and durations.** The domain has no sub-second meaning, and seconds is the epoch SQLite's date functions expect, which keeps the database directly inspectable.
-- **`unlinked_phase` / `unlinked_error` on entries**, with a `CHECK` making their mutual exclusion with `remote_record_id` structural rather than conventional.
+- **`upload_error` on entries**, with a `CHECK` making its mutual exclusion with `remote_record_id` structural rather than conventional. Pending and failed are the only states an unlinked entry has, and they differ only by whether an error is present.
 - **A remote record may be referenced by multiple entries**, expressed as a plain nullable FK rather than a join table, because an entry still targets at most one record. A join table would only be needed if an entry could feed several remotes at once, which `YATTA.md` rejects.
-- **Upload state lives on `remote_records`** once a group has uploaded successfully at least once, since the state is then a group-level fact; on the unlinked entry row before that.
+- **Remote records are write-once.** Upload is one-way, so a record has no lifecycle: it is created on success or exclusion and never changed. There is no record phase and no table of records awaiting upstream deletion.
+- **Exclusions are sentinel records** (`remote_id IS NULL`), so an excluded entry is linked, locked, and no longer pending, through the same mechanism as an uploaded one.
 - **Stale remote task references are reconciled, not wiped.** Referenced departed rows are retained with `departed_at`; unreferenced ones are hard-deleted. No display-name snapshot on entries is needed, since the retained row keeps both the reference and the display intact.
 - **Foreign keys and WAL enabled** at connection setup.
 
 ## Open Questions
 
-- **Whether the local-task/upload-columns invariant deserves a trigger.** Currently a store invariant with a test, on the grounds that a single-writer local database does not need belt and braces. A trigger would make it structural at the cost of schema machinery, and would also catch corruption introduced by hand-editing the database — which the inspectability argument above makes marginally more likely.
+- **Whether the store invariants deserve triggers.** The local-task/upload-columns rule and the locking of linked entries are currently store invariants with tests, on the grounds that a single-writer local database does not need belt and braces. Triggers would make them structural at the cost of schema machinery, and would also catch changes from hand-editing the database — which the inspectability argument above makes marginally more likely. Locking is the stronger candidate, since it is the product's promise about uploaded time.
 - **Whether `extra` should become typed columns per integration.** Acceptable as a JSON blob while only one integration is active at a time and the set is small; worth revisiting if deserialization becomes hot or the three integrations' fields diverge enough that the blob obscures more than it saves.
-- **Retention.** Nothing in the schema ever ages out. Uploaded records and their entries accumulate indefinitely. For a single user this is unlikely to matter for years, but the always-running resting view queries the entry list constantly, and it is worth deciding whether that list is bounded by a window (the index supports it) or whether the table is expected to stay small enough that it never matters.

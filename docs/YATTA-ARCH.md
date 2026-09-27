@@ -14,7 +14,7 @@ YATTA is a single Go module producing one statically-linked binary. The interfac
 
 2. **Nil is the discriminator.** `TimeEntry.Upload == nil` means the entry is on a local task and has no remote concern. `Task.Remote == nil` means the task is local. This keeps one type and one table per concept, and avoids a polymorphic foreign key that SQLite could not enforce.
 
-3. **Derive what can be derived.** `End()` is a method over `Start` and `Duration`, never a field. Divergence from the remote is derived from the upload phase and record link, never stored as a separate flag.
+3. **Derive what can be derived.** `End()` is a method over `Start` and `Duration`, never a field. Whether an entry is locked is derived from its record link, never stored as a separate flag.
 
 4. **Push logic into pure functions; keep I/O at the edges.** Rounding, aggregation, and upload planning are pure functions from values to values. They read no database, call no network, and consult no clock they were not handed. Everything intricate about this product lives in those functions, which means everything intricate about this product is directly table-testable. This is the primary compensation for Go's weaker type system relative to the domain's variants, and it is load-bearing rather than incidental: the hardest logic in the product must not also be the hardest to test.
 
@@ -108,6 +108,17 @@ func (t Task) IsRemote() bool   { return t.Remote != nil }
 func (t Task) Selectable() bool {
     return t.Archived == nil && (t.Remote == nil || t.Remote.Departed == nil)
 }
+
+// FetchedTask is one node of a remote hierarchy as an adapter returns it,
+// before it has a local ID. The store's reconciliation maps native IDs to
+// local UUIDs, including the parent link.
+type FetchedTask struct {
+    NativeID       string
+    ParentNativeID string // "" for roots
+    Name           string
+    NodeType       string
+    Extra          json.RawMessage
+}
 ```
 
 Integration-specific native keys live in `Extra` as raw JSON and are unmarshalled by the owning adapter into its own unexported struct. This puts the typing where the typing is used: an adapter building a request payload is the only code that needs a structured native key, and `Integration` tells it the blob is its own to interpret. Giving each integration a distinct domain type would impose per-integration handling on every other layer to serve one call site.
@@ -139,61 +150,43 @@ func (e TimeEntry) End() time.Time { return e.Start.Add(e.Duration) }
 type Phase string
 
 const (
-    Pending  Phase = "pending"
-    Uploaded Phase = "uploaded"
-    Failed   Phase = "failed"
+    Pending  Phase = "pending"  // not yet uploaded; editable
+    Failed   Phase = "failed"   // last upload attempt rejected; editable, retried next upload
+    Uploaded Phase = "uploaded" // linked to a record that was sent; locked
+    Excluded Phase = "excluded" // linked to a sentinel: below minimum, nothing sent; locked
 )
 
 type UploadState struct {
     Phase    Phase
     Err      string // non-empty only when Phase == Failed
-    RecordID string // "" until this entry has been part of a successful upload
+    RecordID string // "" until uploaded or excluded
 }
 
-// Diverged reports that the remote holds a stale projection of this entry:
-// it was uploaded successfully at least once, and has since changed.
-func (u UploadState) Diverged() bool { return u.Phase == Pending && u.RecordID != "" }
+// Locked reports that the entry has been uploaded or excluded and can no
+// longer be changed.
+func (u UploadState) Locked() bool { return u.RecordID != "" }
 ```
 
-The two fields together carry five meaningful states:
+`Phase` follows from `RecordID` plus one fact on each side: an unlinked entry is `Failed` if it carries an error and `Pending` otherwise; a linked entry is `Excluded` if its record is a sentinel and `Uploaded` otherwise. The store materializes it on read. Upload is one-way, so there is no state in which an entry is linked and still owes the remote anything.
 
-| `Phase` | `RecordID` | Meaning |
-|---|---|---|
-| `Pending` | `""` | Never uploaded. Awaiting its first upload. |
-| `Failed` | `""` | First upload attempt failed. Nothing exists upstream. |
-| `Uploaded` | set | Remote matches this entry as of the record's `UploadedAt`. |
-| `Pending` | set | **Diverged.** Uploaded before, changed since. Remote holds a stale projection; the UI shows both. |
-| `Failed` | set | Re-upload failed. The remote still holds the last good projection. |
-
-**Where the state actually lives.** Once `RecordID` is set, the phase is a property of the *record*, shared by every entry linked to it, so that aggregated siblings always agree — the "group shares one fate" rule in `YATTA.md`. `TimeEntry.Upload` is therefore materialized by the store on read: linked entries take their phase and error from the record, unlinked entries from their own row. Neither `core` nor `ui` needs to know this; both see a consistent `UploadState` either way.
-
-### Remote Records and Orphans
+### Remote Records
 
 ```go
 type RemoteRecord struct {
     ID          string        // local UUID
-    RemoteID    string        // opaque; only the owning adapter interprets it
+    RemoteID    string        // opaque; only the owning adapter interprets it. "" => excluded sentinel
     Integration string
     TaskID      string        // the task this record was uploaded under
-    Start       time.Time     // post-rounding; earliest member's start under aggregation
-    Duration    time.Duration // post-rounding; summed across members under aggregation
-    Phase       Phase
-    Err         string
-    UploadedAt  time.Time
+    Start       time.Time     // earliest member's start
+    Duration    time.Duration // members' summed duration, policy applied
+    Note        string        // distinct member notes, concatenated
+    CreatedAt   time.Time
 }
 
-// An OrphanedRecord still exists upstream but no local entry targets it any
-// more, because every member was deleted or reassociated away. It outlives the
-// entries, so it is tracked separately rather than cascading away with them.
-type OrphanedRecord struct {
-    RemoteID    string
-    Integration string
-    TaskID      string // delete context, e.g. the Jira issue holding the worklog
-    OrphanedAt  time.Time
-}
+func (r RemoteRecord) Excluded() bool { return r.RemoteID == "" }
 ```
 
-`TaskID` on the record serves two purposes: some integrations address a record by parent *and* id when deleting (a Jira worklog is addressed by issue and worklog id), and comparing an entry's current task against its record's task is what detects a reassociation.
+A record is written once and never modified — YATTA does not update or delete remote records.
 
 ### Active Timer
 
@@ -232,18 +225,20 @@ type Policy struct {
 type Unit struct {
     TaskID   string
     Entries  []TimeEntry
-    Start    time.Time     // earliest member's start, post-rounding
-    Duration time.Duration // post-rounding; summed under aggregation
+    Start    time.Time     // earliest member's start; not rounded
+    Raw      time.Duration // sum of member durations
+    Duration time.Duration // Raw with the policy applied
+    Note     string        // distinct member notes, in start order
 }
 
-// Group applies the policy to entries, returning the units to be uploaded and
-// the entries excluded by a below-minimum rule. loc is the device timezone,
-// used only for the task_day grouping boundary.
-//
-// Group must be given every entry belonging to a candidate group, including
-// entries already uploaded — see PlanUpload.
-func Group(entries []TimeEntry, p Policy, loc *time.Location) (units []Unit, excluded []TimeEntry)
+// Group forms units from entries and applies the policy to each unit's summed
+// duration. Units falling below the minimum under the "exclude" rule are
+// returned separately. loc is the device timezone, used only for the task_day
+// grouping boundary.
+func Group(entries []TimeEntry, p Policy, loc *time.Location) (upload, excluded []Unit)
 ```
+
+Rounding and the minimum are applied once, to the unit's summed raw duration. Individual entries are never rounded.
 
 Aggregation is folded into the grouping output rather than modeled as a separate pass: the non-aggregated case is simply every unit having exactly one member. One code path serves both configurations, and no caller needs to branch on whether aggregation is active.
 
@@ -252,65 +247,34 @@ Aggregation is folded into the grouping output rather than modeled as a separate
 ### Upload Planning
 
 ```go
-type OpKind string
-
-const (
-    OpCreate OpKind = "create"
-    OpUpdate OpKind = "update"
-    OpDelete OpKind = "delete"
-)
-
-type Op struct {
-    Kind     OpKind
-    Unit     Unit   // zero value for OpDelete
-    RecordID string // "" for OpCreate
-    RemoteID string // "" for OpCreate
-    TaskID   string // delete context for OpDelete
+type Plan struct {
+    Upload   []Unit // each becomes one Create call
+    Excluded []Unit // each becomes one sentinel record; shown on the confirmation screen
 }
 
-// PlanUpload derives the complete set of operations from current state alone.
+// PlanUpload selects the unlocked remote-task entries starting on or before
+// through and groups them. through is an inclusive local date normalized to
+// end-of-day, which guarantees it never bisects an aggregation group. The zero
+// value means no bound.
 //
-// entries must contain EVERY remote-task entry within the bound, regardless of
-// phase — uploaded entries included. Groups are formed from current membership,
-// so a group's recomputed duration is only correct if the whole group is
-// present. Passing only the non-uploaded entries would recompute an existing
-// record from its new members alone and silently undercount it.
-//
-// through bounds the upload to entries starting on or before that instant. It
-// is an inclusive local date normalized to end-of-day, which guarantees it
-// never bisects an aggregation group. The zero value means no bound.
-//
-// PlanUpload never consults a log of edits — the net-intent semantics in
-// YATTA.md fall out of deriving everything from the present.
-func PlanUpload(
-    entries []TimeEntry,
-    records map[string]RemoteRecord,
-    orphans []OrphanedRecord,
-    p Policy,
-    loc *time.Location,
-    through time.Time,
-) []Op
+// Locked entries are never planned: upload is one-way, so an entry that has
+// been uploaded or excluded is finished.
+func PlanUpload(entries []TimeEntry, p Policy, loc *time.Location, through time.Time) Plan
 ```
 
-The rules it encodes:
-
-- No member of a unit carries a `RecordID` → **create**; on success every member links to the new record.
-- A member links to a record whose `TaskID` matches the unit's → **update** that record in place with the recomputed start and duration, and link any newly added members to it.
-- A member's linked record has a `TaskID` that no longer matches → that member is simply absent from this unit, because grouping is always by current task. If it was the record's last member the record is already an orphan (the store orphans on the last member leaving); otherwise the record is recomputed for its survivors in the same pass, which falls out of regrouping rather than needing its own branch.
-- Each orphan → **delete**.
-- **A unit whose members are all `Uploaded` and whose recomputed start and duration equal the linked record's produces no operation.** This is what keeps "pass every entry" from turning every upload into a full re-upload: fully-settled groups are present so grouping is correct, then drop out.
-
-Because the whole thing is a function over values, every reassociation and membership-change edge case is an ordinary table entry in a test file rather than a scenario requiring a mocked adapter.
+With create as the only remote operation, planning has no branch table: every unit is either uploaded or excluded. Because it is a function over values, every rounding, minimum, and day-boundary case is an ordinary table entry in a test file.
 
 ### Execution
 
 Execution is the thin part, and it lives in `ui` as a command, because it is I/O:
 
 ```go
-func uploadCmd(st *store.Store, ad remote.Adapter, ops []core.Op) tea.Cmd
+func uploadCmd(st *store.Store, ad remote.Adapter, plan core.Plan) tea.Cmd
 ```
 
-It walks the ops, calls the adapter, and persists each result: on success the record's phase becomes `Uploaded` and any consumed orphan is removed; on failure the record's phase becomes `Failed` with the error, or — for an entry not yet linked to any record — the failure is written to the entry's own row. **There is no batch-level failure mode.** A rejected op produces failed entries within an otherwise successful upload; it never aborts the run. This includes a remote-specific rejection such as an overlap constraint, which is an ordinary adapter error like any other.
+On confirmation, it first records the excluded units as sentinel records, then walks the upload units in order, calling the adapter's `Create` for each and persisting each result immediately: on success a record is written and every member linked to it in one transaction; on failure the error is written to each member's row, leaving them unlinked and editable. **There is no batch-level failure mode.** A rejected unit produces failed entries within an otherwise successful upload; it never aborts the run. This includes a remote-specific rejection such as an overlap constraint, which is an ordinary adapter error like any other.
+
+Upload is modal: while it runs, the interface shows progress and accepts no edits, so what is sent is exactly what was confirmed.
 
 ---
 
@@ -325,18 +289,20 @@ func Open(path string) (*Store, error)
 
 func (s *Store) Entries(from, to time.Time) ([]core.TimeEntry, error)
 func (s *Store) Entry(id string) (core.TimeEntry, error)
-func (s *Store) SaveEntry(e core.TimeEntry) error
-func (s *Store) DeleteEntry(id string) error
+func (s *Store) SaveEntry(e core.TimeEntry) error // rejects a locked entry
 
-// RemoteEntries returns every entry on a remote task starting on or before
-// through, in any phase. Named for what it returns rather than for the upload
-// that consumes it, because PlanUpload requires settled entries too.
-func (s *Store) RemoteEntries(through time.Time) ([]core.TimeEntry, error)
+// UnlockedRemoteEntries returns every pending or failed entry on a remote task
+// starting on or before through: the input to PlanUpload.
+func (s *Store) UnlockedRemoteEntries(through time.Time) ([]core.TimeEntry, error)
+
+func (s *Store) RecordUpload(u core.Unit, integration, remoteID string) error // write record, link members
+func (s *Store) RecordExcluded(u core.Unit, integration string) error         // write sentinel, link members
+func (s *Store) RecordFailure(u core.Unit, err error) error                   // set error on members
+
+func (s *Store) Purge(before time.Time) error
 
 func (s *Store) Tasks() ([]core.Task, error)
-func (s *Store) ReconcileRemoteTasks(fetched []core.Task) error
-func (s *Store) Records(ids []string) (map[string]core.RemoteRecord, error)
-func (s *Store) Orphans() ([]core.OrphanedRecord, error)
+func (s *Store) ReconcileRemoteTasks(integration string, fetched []core.FetchedTask) error
 // ... timer, config, settings
 ```
 
@@ -347,7 +313,7 @@ func (s *Store) Orphans() ([]core.OrphanedRecord, error)
 Two invariants the store owns, since the type system does not:
 
 - An entry whose task is remote always reads back with a non-nil `Upload`; an entry whose task is local always reads back with nil. Asserted on the read path.
-- A linked entry's phase and error are materialized from its record, never from its own row, so aggregated siblings cannot disagree.
+- A linked entry is never modified. `SaveEntry` refuses it.
 
 The schema is specified in `YATTA-DATA.md`.
 
@@ -360,14 +326,12 @@ An interface is warranted here: the implementation is selected at runtime from c
 ```go
 type Adapter interface {
     Integration() string
-    FetchTasks(ctx context.Context) ([]core.Task, error)
-    Create(ctx context.Context, u core.Unit) (remoteID string, err error)
-    Update(ctx context.Context, remoteID string, u core.Unit) error
-    Delete(ctx context.Context, remoteID string, taskID string) error
+    FetchTasks(ctx context.Context) ([]core.FetchedTask, error)
+    Create(ctx context.Context, task core.Task, u core.Unit) (remoteID string, err error)
 }
 ```
 
-Adapters take a `core.Unit` and neither know nor care whether its duration summarizes one entry or five — aggregation is invisible below the planning layer. Credentials and base URL are injected at construction; an adapter never reads configuration or the keyring itself. Each adapter unmarshals `Task.Remote.Extra` into its own unexported struct.
+Create is the only write. `task` is the unit's target task, passed so the adapter can read its native ID and `Extra` without any store access. Adapters take a `core.Unit` and neither know nor care whether its duration summarizes one entry or five — aggregation is invisible below the planning layer. Credentials and base URL are injected at construction; an adapter never reads configuration or the keyring itself. Each adapter unmarshals `Task.Remote.Extra` into its own unexported struct.
 
 All three are plain `net/http` clients with `encoding/json`. Jira, Redmine, and Toggl all expose ordinary REST, and a vendor SDK would import far more than it saves.
 
@@ -395,8 +359,8 @@ type mode int
 const (
     modeEntries mode = iota // resting view
     modePicker              // choosing a task
-    modeEditor              // creating or correcting an entry
-    modeUpload              // confirm scope, then progress
+    modeEditor              // creating or correcting an entry; read-only when locked
+    modeUpload              // confirm scope, then blocking progress
     modeAttention           // failed uploads and departed tasks
 )
 
@@ -424,18 +388,18 @@ The resting view is `modeEntries` with a status bar rendered by the root model o
 | Requirement | Component |
 |---|---|
 | Entry list, search, filter, resume-from-recent | `bubbles/list` — its built-in filtering is the search requirement, and the list is ordered most-recent-first so resume is a filter plus Enter |
-| Merged local/remote view | The entry list's detail rendering. A linked entry shows its local values alongside the record's uploaded values; under aggregation the sibling members are shown together against the one remote value. `Diverged()` drives the emphasis |
+| Merged local/remote view | The entry list's detail rendering, read-only. A linked entry shows its local values alongside the record's uploaded values; under aggregation the sibling members are shown together against the one remote value, and an excluded entry is marked as such |
 | Task tree picker | `bubbles/list` over a depth-flattened tree with indent prefixes, filtering on the full ancestry path; non-`Selectable()` tasks omitted |
-| Entry create / correct | `bubbles/textinput` for times and note, plus the picker for the task — reassociation is this same flow, not a separate one |
+| Entry create / correct | `bubbles/textinput` for times and note, plus the picker for the task — reassociation is this same flow, not a separate one. A locked entry opens read-only |
 | Rounding and aggregation policy | `huh` form, reached from settings |
-| Upload confirmation and progress | custom; a summary of planned ops and below-minimum exclusions, then per-op results streaming in |
+| Upload confirmation and progress | custom; a summary of the units to upload and the below-minimum exclusions, then per-unit results streaming in while all other input is blocked |
 | Failed uploads and departed tasks | `bubbles/list` in `modeAttention`, filtered by kind; selecting an item returns to `modeEntries` positioned on the affected entry |
 
 Flattening the task tree into a filterable list rather than building a tree widget is deliberate: filtering across a full ancestry path is a better interaction for deep hierarchies than expanding and collapsing nodes, and it reuses the component already carrying the entry list.
 
 Failed uploads and departed tasks share one mode with a filter rather than occupying two. They are consulted in the same moment, they share the same go-to action, and a departed task frequently *causes* the upload failure sitting next to it in the list.
 
-Under aggregation, every entry sharing a failed record appears in the attention list, since the materialized phase gives all of them `Failed`. That falls out of the store's materialization rather than needing its own rule.
+Under aggregation, every member of a failed unit appears in the attention list, since the failure is written to each member. Departed tasks are listed only through the not-yet-uploaded entries on them; uploaded entries on a departed task are history and need no action.
 
 ### Messages and Commands
 
@@ -445,12 +409,12 @@ I/O never blocks `Update`. Every store read, every adapter call, and the timer t
 type entriesLoadedMsg struct{ entries []core.TimeEntry; err error }
 type tasksLoadedMsg   struct{ tasks   []core.Task;      err error }
 type tickMsg          time.Time              // 1s, drives the running-timer display
-type uploadPlannedMsg struct{ ops []core.Op; excluded []core.TimeEntry }
-type opDoneMsg        struct{ op core.Op; err error }   // one per operation
+type uploadPlannedMsg struct{ plan core.Plan }
+type unitDoneMsg      struct{ unit core.Unit; err error } // one per uploaded unit
 type uploadDoneMsg    struct{ succeeded, failed int }
 ```
 
-`opDoneMsg` arriving one per operation is what makes the no-batch-failure rule fall out of the architecture rather than needing enforcement: each result is persisted and rendered independently, and there is no place where a single error could abort the run even by accident.
+`unitDoneMsg` arriving one per unit is what makes the no-batch-failure rule fall out of the architecture rather than needing enforcement: each result is persisted and rendered independently, and there is no place where a single error could abort the run even by accident.
 
 `uploadPlannedMsg` carries the below-minimum exclusions alongside the ops so the confirmation screen can show them, satisfying the visibility requirement in `YATTA.md`.
 
@@ -462,10 +426,10 @@ The `tickMsg` cadence is one second, which is what an always-visible running tim
 
 The type system carries fewer guarantees than the domain has invariants, so tests carry the difference, and the architecture is arranged to make that a fair trade rather than a hopeful one.
 
-- **`core` is covered by table-driven tests and carries no mocks**, because it has no I/O to mock. `Group` and `PlanUpload` between them hold every rule that is subtle: rounding directions, below-minimum behavior, the day boundary near midnight in a non-UTC zone, task reassociation, membership changes to an already-uploaded group, adding a member to a settled group, and orphan handling. Each is a table row.
-- **The store is tested against a real SQLite database** in a temp file, not a fake. It is fast enough, and the invariants worth testing — materialized phase, nil-`Upload` discipline, reconciliation of departed tasks — are exactly the ones a fake would paper over.
+- **`core` is covered by table-driven tests and carries no mocks**, because it has no I/O to mock. `Group` and `PlanUpload` between them hold every rule that is subtle: rounding the summed duration rather than each entry, rounding directions, below-minimum behavior, note concatenation, the day boundary near midnight in a non-UTC zone, the upload bound, and never planning a locked entry. Each is a table row.
+- **The store is tested against a real SQLite database** in a temp file, not a fake. It is fast enough, and the invariants worth testing — locking of linked entries, nil-`Upload` discipline, reconciliation of departed tasks, purge — are exactly the ones a fake would paper over.
 - **Adapters are tested against `httptest.Server`** with recorded payloads.
-- **`gochecksumtype` in the lint gate**, wherever a closed union remains, recovers exhaustiveness checking on type switches.
+- **`exhaustive` in the lint gate** recovers exhaustiveness checking on switches over the string enums (`Phase`, `Direction`, `BelowMin`, `AggKey`), since the design has no interface-based unions for a sum-type checker to inspect.
 
 ---
 
@@ -478,14 +442,16 @@ The type system carries fewer guarantees than the domain has invariants, so test
 ## Resolved Decisions
 
 - **Flattened domain model.** One `TimeEntry` with a nillable `Upload`, one `Task` with a nillable `Remote` and a JSON `Extra`, and an upload state expressed as a phase plus a record link. The alternative — closed interfaces with unexported marker methods and a type switch at every use site — reproduces the shape of a sealed hierarchy without reproducing its exhaustiveness, and costs more code than the guarantee is worth at this size. The invariants the flattening gives up are held by the store and asserted by tests.
-- **Upload planning is a pure function.** `PlanUpload` decides; a command executes. The create/update/drop-member/orphan branch table is the most error-prone logic in the product, and keeping it free of network calls and persistence is what makes it directly testable.
-- **Planning sees settled entries, not just pending ones.** `PlanUpload` takes every remote-task entry within the bound regardless of phase, and drops fully-settled unchanged groups on the way out. Grouping by current membership is only correct if the whole group is present; a plan built from non-uploaded entries alone would recompute an existing record from its new members and undercount it.
+- **Upload planning is a pure function.** `PlanUpload` decides; a command executes. Grouping, rounding, and minimums are where the product's subtle rules live, and keeping them free of network calls and persistence is what makes them directly testable.
+- **Create is the only remote operation.** Upload is one-way (`YATTA.md`), so the adapter interface has no update or delete, the planner has no record-reconciliation branches, and there are no orphaned records.
+- **The adapter receives the target task.** `Create` is passed the `core.Task` so the adapter can address the remote task by native ID without store access; `FetchTasks` returns `FetchedTask`s keyed by native ID, and the store assigns local IDs.
 - **The upload bound is an inclusive local date normalized to end-of-day.** An arbitrary timestamp bound could bisect a task+day aggregation group, uploading half a day and leaving the rest to recompute the same record later.
 - **No interfaces in the domain for persistence.** The store is a concrete type; consumers declare narrow interfaces where they need seams.
 - **Domain objects hold identifiers, not object references.** Parent-pointer object graphs over an arbitrary-depth tree fight both Go's lack of lazy loading and SQLite's adjacency-list storage, and departed-node reconciliation is where a graph representation would hurt most.
 - **Integration-specific task typing lives in the adapter.** Native keys are `json.RawMessage` in `core` and typed structs inside the owning adapter, which is the only code that reads them.
 - **Failed uploads and departed tasks share one attention view.** Same moment of consultation, same go-to action, and the two conditions are frequently causally linked.
-- **Below-minimum exclusions are surfaced at upload confirmation.** An entry excluded by a minimum-duration rule is otherwise indistinguishable from one that was never attempted.
+- **Below-minimum exclusions are surfaced at upload confirmation and recorded as sentinel records.** Recording them locks the entries and takes them out of the pending count; surfacing them means nothing is excluded without the user seeing it.
+- **Upload is modal and blocking.** No edits race the upload, so no check is needed that an entry changed between planning and persisting its result.
 - **`net/http` rather than vendor SDKs** for all three integrations.
 - **Pure-Go SQLite (`modernc.org/sqlite`)** to keep `CGO_ENABLED=0` and single-binary cross-compilation.
 - **No overlap validation in `core`.** `Group` does not validate spans and `PlanUpload` has no abort path. A remote that genuinely cares enforces it inside its own adapter, where a rejection is an ordinary per-op failure.
@@ -497,3 +463,8 @@ The type system carries fewer guarantees than the domain has invariants, so test
 - **Hand-written SQL versus `sqlc`.** Hand-written is assumed above and keeps the dependency count and build steps minimal. `sqlc` generates typed Go from the same SQL and would recover a slice of the compile-time safety the flattened domain gives up, at the cost of a code-generation step in the build. Given how much weight rests on tests rather than types, this deserves an explicit answer rather than a default.
 - **Migration runner.** A hand-rolled stepper over `PRAGMA user_version` with embedded `.sql` files is roughly forty lines and adds no dependency; `goose` or `golang-migrate` are standard and add one. Leaning hand-rolled on the same minimal-dependency grounds as the rest.
 - **Package name for the domain.** `internal/core` reads as `core.TimeEntry`, which is serviceable but generic. `internal/tracking` is an alternative. Cosmetic, but it appears in every file in the project.
+- **Duplicate on crash.** If the process dies after the remote accepts a `Create` but before the local transaction commits, the entries stay pending and the next upload sends them again. Options: accept and document it; or write an in-flight marker before each call and, on restart, list those units for the user to check against the remote before retrying.
+- **Pending entries on a departed task.** Plan them and let the `Create` fail, or leave them out of the plan and show them on the confirmation screen? Leaving them out avoids a call that is known to fail; both routes end in the attention list.
+- **Note concatenation.** Separator, and what happens when the result exceeds a remote's field limit (Jira worklog comments, Toggl descriptions). Truncation belongs in the adapter, but whether truncation is acceptable is a product call.
+- **Modes not yet designed.** Local task management (create, rename, nest, archive), settings and integration setup (base URL, credentials into the keyring), purge, and the trigger for fetching remote tasks (startup, keystroke, or both) have no place in the mode structure above.
+- **Database location.** Presumably the platform's user data directory (`os.UserConfigDir` or an XDG data path), with an override flag.
