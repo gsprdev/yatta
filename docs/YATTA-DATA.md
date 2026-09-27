@@ -172,6 +172,7 @@ At most one row.
 | `integration` | TEXT NOT NULL | `'jira'` \| `'redmine'` \| `'toggl'` |
 | `base_url` | TEXT | nullable; required for Jira/Redmine, unused by Toggl |
 | `keyring_key` | TEXT NOT NULL | account key within the `yatta` keyring service |
+| `task_query` | TEXT | nullable; which remote tasks to fetch — JQL for Jira, an `issues.json` filter for Redmine; NULL ⇒ the adapter's default |
 | `last_fetch_at` | INTEGER | nullable, Unix seconds |
 
 **Credentials are never stored in SQLite.** Tokens and passwords live in the OS keyring via `internal/secret`, addressed by service `yatta` and account `keyring_key`. Deleting this row disables the integration; its tasks are then reconciled against an empty fetch, so unreferenced remote tasks are removed and referenced ones soft-delete to `departed_at`, keeping existing entries' history intact and surfacing them for reassociation.

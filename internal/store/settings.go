@@ -135,18 +135,19 @@ type IntegrationConfig struct {
 	Integration string // "jira" | "redmine" | "toggl"
 	BaseURL     string // required for Jira and Redmine
 	KeyringKey  string
+	TaskQuery   string // which remote tasks to fetch: JQL for Jira, an issue filter for Redmine; "" => default
 	LastFetchAt *time.Time
 }
 
 // Integration returns the configured integration, or nil if none is.
 func (s *Store) Integration() (*IntegrationConfig, error) {
 	var (
-		c         IntegrationConfig
-		base      sql.NullString
-		lastFetch sql.NullInt64
+		c           IntegrationConfig
+		base, query sql.NullString
+		lastFetch   sql.NullInt64
 	)
-	err := s.db.QueryRow(`SELECT integration, base_url, keyring_key, last_fetch_at
-		FROM integration_config WHERE id = 1`).Scan(&c.Integration, &base, &c.KeyringKey, &lastFetch)
+	err := s.db.QueryRow(`SELECT integration, base_url, keyring_key, task_query, last_fetch_at
+		FROM integration_config WHERE id = 1`).Scan(&c.Integration, &base, &c.KeyringKey, &query, &lastFetch)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -154,6 +155,7 @@ func (s *Store) Integration() (*IntegrationConfig, error) {
 		return nil, err
 	}
 	c.BaseURL = base.String
+	c.TaskQuery = query.String
 	c.LastFetchAt = timePtr(lastFetch)
 	return &c, nil
 }
@@ -165,11 +167,11 @@ func (s *Store) SetIntegration(c IntegrationConfig) error {
 	if err := s.retireOtherIntegration(c.Integration); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`INSERT INTO integration_config (id, integration, base_url, keyring_key, last_fetch_at)
-		VALUES (1, ?, ?, ?, ?)
+	_, err := s.db.Exec(`INSERT INTO integration_config (id, integration, base_url, keyring_key, task_query, last_fetch_at)
+		VALUES (1, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET integration = excluded.integration, base_url = excluded.base_url,
-			keyring_key = excluded.keyring_key, last_fetch_at = excluded.last_fetch_at`,
-		c.Integration, nullStr(c.BaseURL), c.KeyringKey, nullTime(c.LastFetchAt))
+			keyring_key = excluded.keyring_key, task_query = excluded.task_query, last_fetch_at = excluded.last_fetch_at`,
+		c.Integration, nullStr(c.BaseURL), c.KeyringKey, nullStr(c.TaskQuery), nullTime(c.LastFetchAt))
 	return err
 }
 

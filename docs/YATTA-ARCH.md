@@ -362,7 +362,15 @@ type Adapter interface {
 
 Create is the only write. `task` is the unit's target task, passed so the adapter can read its native ID and `Extra` without any store access. Adapters take a `core.Unit` and neither know nor care whether its duration summarizes one entry or five — aggregation is invisible below the planning layer. Credentials and base URL are injected at construction; an adapter never reads configuration or the keyring itself. Each adapter unmarshals `Task.Remote.Extra` into its own unexported struct.
 
-All three are plain `net/http` clients with `encoding/json`. Jira, Redmine, and Toggl all expose ordinary REST, and a vendor SDK would import far more than it saves.
+All three are plain `net/http` clients with `encoding/json`, sharing a small JSON client in `internal/remote` that turns an error response into the remote's own message, since that message is what the user sees in the attention list.
+
+| Adapter | Tasks fetched | Where time is recorded |
+|---|---|---|
+| Jira | Issues matching the configured JQL (default: unresolved, and assigned to, reported by, or watched by the user), under their project and, where Jira reports one, their parent issue. Label: the issue key | A worklog on an issue. Cloud (email + API token) uses REST v3; Data Center (personal access token, no email) uses REST v2 |
+| Redmine | Every visible project; issues matching the configured filter (default: open and assigned to the user), under their target version where they have one. Label: `#id` | A time entry on an issue or a project, dated by the local day. An instance with no default activity rejects it, which surfaces as an ordinary failure |
+| Toggl | Workspaces, clients, active projects, and active tasks (tasks only where the plan includes them) | A time entry in the workspace, on the project and task where chosen |
+
+A node that cannot hold time (a Jira project, a Redmine version, a Toggl client) is still offered in the picker, and the adapter rejects an upload against it with an explanation. Jira, Redmine, and Toggl all expose ordinary REST, and a vendor SDK would import far more than it saves.
 
 An adapter may reject a call for reasons specific to its remote — a system that disallows overlapping entries, for instance. That rejection is a returned error, handled by execution exactly like any other adapter failure. There is no shared overlap-detection or conflict-resolution facility, and any such logic belongs inside the adapter that needs it.
 
@@ -506,6 +514,7 @@ The database is `yatta.db` in the platform's per-user data directory: `$XDG_DATA
 - **Hand-written SQL, not `sqlc`.** The store is small, and the rules it must hold (locking, nil-`Upload`, reconciliation) are covered by store tests against real SQLite, which typed query code would not replace. No code-generation step in the build.
 - **Hand-rolled migration runner** over `PRAGMA user_version`: about forty lines, no dependency.
 - **Domain package stays `internal/core`.**
+- **Remote tasks are fetched by a configurable query.** Fetching every issue of a large Jira or Redmine instance is impractical, so each has a default scope — the user's open issues — which the integration settings can override (`task_query`). Toggl's sets are small and are fetched whole.
 - **An over-long note is an ordinary upload failure.** If the remote rejects a combined note for length, that unit fails like any other adapter error and lands in the error list; the user shortens the notes. No truncation or special handling.
 - **Below-minimum exclusions are surfaced at upload confirmation and recorded as sentinel records.** Recording them locks the entries and takes them out of the pending count; surfacing them means nothing is excluded without the user seeing it.
 - **Upload is modal and blocking.** No edits race the upload, so no check is needed that an entry changed between planning and persisting its result.

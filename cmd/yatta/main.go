@@ -13,6 +13,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/gsprdev/yatta/internal/remote"
+	"github.com/gsprdev/yatta/internal/remote/jira"
+	"github.com/gsprdev/yatta/internal/remote/redmine"
+	"github.com/gsprdev/yatta/internal/remote/toggl"
 	"github.com/gsprdev/yatta/internal/secret"
 	"github.com/gsprdev/yatta/internal/store"
 	"github.com/gsprdev/yatta/internal/ui"
@@ -84,5 +87,13 @@ func dataDir() (string, error) {
 }
 
 func newAdapter(cfg *store.IntegrationConfig, cred ui.Credential) (remote.Adapter, error) {
-	return nil, fmt.Errorf("the %s integration is not built yet", cfg.Integration)
+	switch cfg.Integration {
+	case "jira":
+		return jira.New(cfg.BaseURL, cred.User, cred.Token, cfg.TaskQuery), nil
+	case "redmine":
+		return redmine.New(cfg.BaseURL, cred.Token, cfg.TaskQuery, time.Local)
+	case "toggl":
+		return toggl.New("", cred.Token), nil
+	}
+	return nil, fmt.Errorf("unknown integration %q", cfg.Integration)
 }

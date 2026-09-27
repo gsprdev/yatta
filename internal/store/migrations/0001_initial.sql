@@ -58,6 +58,7 @@ CREATE TABLE integration_config (
     integration   TEXT NOT NULL CHECK (integration IN ('jira','redmine','toggl')),
     base_url      TEXT,
     keyring_key   TEXT NOT NULL,
+    task_query    TEXT,
     last_fetch_at INTEGER
 );
 

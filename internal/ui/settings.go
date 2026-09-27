@@ -10,6 +10,8 @@ import (
 	"github.com/charmbracelet/huh"
 
 	"github.com/gsprdev/yatta/internal/core"
+	"github.com/gsprdev/yatta/internal/remote/jira"
+	"github.com/gsprdev/yatta/internal/remote/redmine"
 	"github.com/gsprdev/yatta/internal/store"
 )
 
@@ -48,7 +50,7 @@ type settingsModel struct {
 type settingsValues struct {
 	increment, direction, minimum, belowMin, aggregate string
 
-	integration, baseURL, user, token string
+	integration, baseURL, user, token, query string
 
 	purgeDate                   string
 	purgeBefore                 time.Time
@@ -71,7 +73,7 @@ func newSettings(d data) settingsModel {
 	}
 	v.integration = "none"
 	if c := d.config; c != nil {
-		v.integration, v.baseURL = c.Integration, c.BaseURL
+		v.integration, v.baseURL, v.query = c.Integration, c.BaseURL, c.TaskQuery
 	}
 	return settingsModel{v: v}
 }
@@ -126,8 +128,16 @@ func (s *settingsModel) open(screen settingsScreen) tea.Cmd {
 					}),
 			).WithHideFunc(func() bool { return v.integration != "jira" && v.integration != "redmine" }),
 			huh.NewGroup(
-				huh.NewInput().Title("Account email").Value(&v.user),
+				huh.NewInput().Title("Account email").
+					Description("Jira Cloud: your Atlassian email, with an API token below.\nJira Data Center: leave empty and use a personal access token.").
+					Value(&v.user),
+				huh.NewInput().Title("Issues to offer as tasks (JQL)").
+					Description("Empty for: "+jira.DefaultQuery).Value(&v.query),
 			).WithHideFunc(func() bool { return v.integration != "jira" }),
+			huh.NewGroup(
+				huh.NewInput().Title("Issues to offer as tasks (issue filter)").
+					Description("Empty for: "+redmine.DefaultQuery).Value(&v.query),
+			).WithHideFunc(func() bool { return v.integration != "redmine" }),
 			huh.NewGroup(
 				huh.NewInput().Title("API token").Description("Stored in the OS keyring, never in the database.").
 					EchoMode(huh.EchoModePassword).Value(&v.token).
@@ -271,6 +281,7 @@ func (m Model) settingsDone(screen settingsScreen) (tea.Model, tea.Cmd) {
 		cfg := store.IntegrationConfig{Integration: v.integration, KeyringKey: v.integration}
 		if v.integration != "toggl" {
 			cfg.BaseURL = strings.TrimRight(strings.TrimSpace(v.baseURL), "/")
+			cfg.TaskQuery = strings.TrimSpace(v.query)
 		}
 		cred, err := json.Marshal(Credential{User: strings.TrimSpace(v.user), Token: strings.TrimSpace(v.token)})
 		if err != nil {
