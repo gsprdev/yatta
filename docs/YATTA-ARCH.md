@@ -99,6 +99,7 @@ type Task struct {
 type RemoteTask struct {
     Integration string          // "jira" | "redmine" | "toggl"
     NativeID    string          // id as known to the remote system
+    Label       string          // human-facing identifier: "PROJ-123", "#4521"; "" if none
     NodeType    string          // "epic", "issue", "project", ...
     Extra       json.RawMessage // integration-specific fields
     Departed    *time.Time      // non-nil => absent from the latest fetch
@@ -116,6 +117,7 @@ type FetchedTask struct {
     NativeID       string
     ParentNativeID string // "" for roots
     Name           string
+    Label          string
     NodeType       string
     Extra          json.RawMessage
 }
@@ -132,9 +134,9 @@ type TimeEntry struct {
     ID        string
     Start     time.Time     // UTC
     Duration  time.Duration
-    TaskID    string
+    TaskID    string        // "" => unassigned; allowed, never uploaded
     Note      string
-    Upload    *UploadState  // nil => entry is on a local task
+    Upload    *UploadState  // nil => entry is on a local task, or unassigned
     CreatedAt time.Time
     UpdatedAt time.Time
 }
@@ -228,7 +230,7 @@ type Unit struct {
     Start    time.Time     // earliest member's start; not rounded
     Raw      time.Duration // sum of member durations
     Duration time.Duration // Raw with the policy applied
-    Note     string        // distinct member notes, in start order
+    Note     string        // member notes combined; see below
 }
 
 // Group forms units from entries and applies the policy to each unit's summed
@@ -238,7 +240,9 @@ type Unit struct {
 func Group(entries []TimeEntry, p Policy, loc *time.Location) (upload, excluded []Unit)
 ```
 
-Rounding and the minimum are applied once, to the unit's summed raw duration. Individual entries are never rounded.
+Rounding and the minimum are applied once, to the unit's summed raw duration. Individual entries are never rounded. A unit that rounds to zero is excluded whether or not a minimum is set.
+
+A unit's note is built from its members in start order: trim each note, drop empty and duplicate notes, add a trailing period to every note but the last unless it already ends with one, and join with a single space.
 
 Aggregation is folded into the grouping output rather than modeled as a separate pass: the non-aggregated case is simply every unit having exactly one member. One code path serves both configurations, and no caller needs to branch on whether aggregation is active.
 
@@ -272,7 +276,7 @@ Execution is the thin part, and it lives in `ui` as a command, because it is I/O
 func uploadCmd(st *store.Store, ad remote.Adapter, plan core.Plan) tea.Cmd
 ```
 
-On confirmation, it first records the excluded units as sentinel records, then walks the upload units in order, calling the adapter's `Create` for each and persisting each result immediately: on success a record is written and every member linked to it in one transaction; on failure the error is written to each member's row, leaving them unlinked and editable. **There is no batch-level failure mode.** A rejected unit produces failed entries within an otherwise successful upload; it never aborts the run. This includes a remote-specific rejection such as an overlap constraint, which is an ordinary adapter error like any other.
+On confirmation, it first records the excluded units as sentinel records, then walks the upload units in order, calling the adapter's `Create` for each and persisting each result immediately. A unit whose task has departed fails without a remote call: a departed task may still exist upstream (a closed Jira issue drops out of the fetch), so calling would sometimes succeed, and `YATTA.md` requires those entries to be reassigned first. For each result: on success a record is written and every member linked to it in one transaction; on failure the error is written to each member's row, leaving them unlinked and editable. **There is no batch-level failure mode.** A rejected unit produces failed entries within an otherwise successful upload; it never aborts the run. This includes a remote-specific rejection such as an overlap constraint, which is an ordinary adapter error like any other.
 
 Upload is modal: while it runs, the interface shows progress and accepts no edits, so what is sent is exactly what was confirmed.
 
@@ -290,6 +294,7 @@ func Open(path string) (*Store, error)
 func (s *Store) Entries(from, to time.Time) ([]core.TimeEntry, error)
 func (s *Store) Entry(id string) (core.TimeEntry, error)
 func (s *Store) SaveEntry(e core.TimeEntry) error // rejects a locked entry
+func (s *Store) DiscardEntry(id string) error     // rejects a locked entry
 
 // UnlockedRemoteEntries returns every pending or failed entry on a remote task
 // starting on or before through: the input to PlanUpload.
@@ -299,6 +304,9 @@ func (s *Store) RecordUpload(u core.Unit, integration, remoteID string) error //
 func (s *Store) RecordExcluded(u core.Unit, integration string) error         // write sentinel, link members
 func (s *Store) RecordFailure(u core.Unit, err error) error                   // set error on members
 
+// PurgeCounts reports the never-uploaded entries a purge would remove, so the
+// interface can warn: failed entries loudly, pending and unassigned plainly.
+func (s *Store) PurgeCounts(before time.Time) (failed, pending, unassigned int, err error)
 func (s *Store) Purge(before time.Time) error
 
 func (s *Store) Tasks() ([]core.Task, error)
@@ -313,7 +321,7 @@ func (s *Store) ReconcileRemoteTasks(integration string, fetched []core.FetchedT
 Two invariants the store owns, since the type system does not:
 
 - An entry whose task is remote always reads back with a non-nil `Upload`; an entry whose task is local always reads back with nil. Asserted on the read path.
-- A linked entry is never modified. `SaveEntry` refuses it.
+- A linked entry is never modified or discarded. `SaveEntry` and `DiscardEntry` refuse it, and a schema trigger backs up the refusal to modify.
 
 The schema is specified in `YATTA-DATA.md`.
 
@@ -361,7 +369,9 @@ const (
     modePicker              // choosing a task
     modeEditor              // creating or correcting an entry; read-only when locked
     modeUpload              // confirm scope, then blocking progress
-    modeAttention           // failed uploads and departed tasks
+    modeAttention           // failed uploads, departed tasks, unassigned entries
+    modeTasks               // local task management
+    modeSettings            // policy, integration setup, purge
 )
 
 type Model struct {
@@ -371,17 +381,19 @@ type Model struct {
     editor    editorModel
     upload    uploadModel
     attention attentionModel
+    tasks     tasksModel
+    settings  settingsModel
 
     timer      *core.ActiveTimer
     todayTotal time.Duration
-    counts     struct{ pending, failed, departed int }
+    counts     struct{ pending, failed, departed, unassigned int }
 
     st *store.Store
     ad remote.Adapter // nil when no integration is configured
 }
 ```
 
-The resting view is `modeEntries` with a status bar rendered by the root model on every frame, carrying the running timer, today's total, and the three attention counts — the always-visible surface required by `YATTA.md`.
+The resting view is `modeEntries` with a status bar rendered by the root model on every frame, carrying the running timer, today's total, and the attention counts — the always-visible surface required by `YATTA.md`.
 
 ### Components
 
@@ -389,11 +401,13 @@ The resting view is `modeEntries` with a status bar rendered by the root model o
 |---|---|
 | Entry list, search, filter, resume-from-recent | `bubbles/list` — its built-in filtering is the search requirement, and the list is ordered most-recent-first so resume is a filter plus Enter |
 | Merged local/remote view | The entry list's detail rendering, read-only. A linked entry shows its local values alongside the record's uploaded values; under aggregation the sibling members are shown together against the one remote value, and an excluded entry is marked as such |
-| Task tree picker | `bubbles/list` over a depth-flattened tree with indent prefixes, filtering on the full ancestry path; non-`Selectable()` tasks omitted |
+| Task tree picker | `bubbles/list` over a depth-flattened tree with indent prefixes, showing each remote task's label and filtering on the full ancestry path plus label, so typing `PROJ-123` finds the ticket; non-`Selectable()` tasks omitted |
 | Entry create / correct | `bubbles/textinput` for times and note, plus the picker for the task — reassociation is this same flow, not a separate one. A locked entry opens read-only |
-| Rounding and aggregation policy | `huh` form, reached from settings |
+| Local task management | `modeTasks`: the same flattened list over local tasks only, with keys to add a child or sibling, rename, move (re-parent through the picker), and archive |
+| Settings | `modeSettings`: `huh` forms for the rounding and aggregation policy and for integration setup — type, base URL, credential (written to the keyring, never the database) — plus purge: choose a date, see the warning counts, confirm |
+| Remote task fetch | a background command on startup when an integration is configured, after integration setup, and on a keystroke from the resting view; never blocks the interface, and the result is reconciled into the store |
 | Upload confirmation and progress | custom; a summary of the units to upload and the below-minimum exclusions, then per-unit results streaming in while all other input is blocked |
-| Failed uploads and departed tasks | `bubbles/list` in `modeAttention`, filtered by kind; selecting an item returns to `modeEntries` positioned on the affected entry |
+| Failed uploads, departed tasks, unassigned entries | `bubbles/list` in `modeAttention`, filtered by kind; selecting an item returns to `modeEntries` positioned on the affected entry |
 
 Flattening the task tree into a filterable list rather than building a tree widget is deliberate: filtering across a full ancestry path is a better interaction for deep hierarchies than expanding and collapsing nodes, and it reuses the component already carrying the entry list.
 
@@ -433,9 +447,23 @@ The type system carries fewer guarantees than the domain has invariants, so test
 
 ---
 
+## Build Order
+
+1. `core` with its table-driven tests: domain types, `Group`, `PlanUpload`.
+2. `store`: schema, migrations, reconciliation, purge, against real SQLite.
+3. `ui`, local-only: timer, entry list, search and resume, editor, local tasks, today's total.
+4. `secret` and the Jira adapter, then upload end to end.
+5. Redmine and Toggl adapters.
+
+Done is defined in `YATTA.md`.
+
+---
+
 ## Build and Distribution
 
 `CGO_ENABLED=0 go build ./cmd/yatta` produces one static binary per platform with no runtime dependency. Cross-compilation is `GOOS`/`GOARCH`. Migrations are embedded with `embed.FS`, so the binary is self-contained.
+
+The database is `yatta.db` in the platform's per-user data directory: `$XDG_DATA_HOME/yatta` (default `~/.local/share/yatta`) on Linux, `~/Library/Application Support/yatta` on macOS, `%AppData%\yatta` on Windows. A `--db` flag overrides it.
 
 ---
 
@@ -449,7 +477,14 @@ The type system carries fewer guarantees than the domain has invariants, so test
 - **No interfaces in the domain for persistence.** The store is a concrete type; consumers declare narrow interfaces where they need seams.
 - **Domain objects hold identifiers, not object references.** Parent-pointer object graphs over an arbitrary-depth tree fight both Go's lack of lazy loading and SQLite's adjacency-list storage, and departed-node reconciliation is where a graph representation would hurt most.
 - **Integration-specific task typing lives in the adapter.** Native keys are `json.RawMessage` in `core` and typed structs inside the owning adapter, which is the only code that reads them.
-- **Failed uploads and departed tasks share one attention view.** Same moment of consultation, same go-to action, and the two conditions are frequently causally linked.
+- **Failed uploads, departed tasks, and unassigned entries share one attention view.** Same moment of consultation, same go-to action, and the conditions are frequently causally linked.
+- **Departed-task units fail without a remote call.** Deterministic, and it forces reassignment as `YATTA.md` requires.
+- **Mode structure for the first version:** task management and settings are their own modes; purge and integration setup live in settings; remote tasks are fetched in the background on startup, after setup, and on demand.
+- **Database location:** the platform's per-user data directory, overridable with `--db`. Go's standard library has no data-directory helper, so this is a few lines in `cmd/yatta`.
+- **Keyring library: `zalando/go-keyring`.** Small, no cgo, and covers Keychain, Secret Service, and Credential Manager. A Linux machine with no Secret Service running cannot store a credential; integration setup reports that clearly. Revisit with `99designs/keyring` only if that case turns up. The wrapper keeps it a one-file change.
+- **Hand-written SQL, not `sqlc`.** The store is small, and the rules it must hold (locking, nil-`Upload`, reconciliation) are covered by store tests against real SQLite, which typed query code would not replace. No code-generation step in the build.
+- **Hand-rolled migration runner** over `PRAGMA user_version`: about forty lines, no dependency.
+- **Domain package stays `internal/core`.**
 - **Below-minimum exclusions are surfaced at upload confirmation and recorded as sentinel records.** Recording them locks the entries and takes them out of the pending count; surfacing them means nothing is excluded without the user seeing it.
 - **Upload is modal and blocking.** No edits race the upload, so no check is needed that an entry changed between planning and persisting its result.
 - **`net/http` rather than vendor SDKs** for all three integrations.
@@ -459,12 +494,4 @@ The type system carries fewer guarantees than the domain has invariants, so test
 
 ## Open Questions
 
-- **Keyring library.** `zalando/go-keyring` is smaller and shells out to platform tools; `99designs/keyring` supports more backends including an encrypted-file fallback, which matters on a headless or minimal Linux workstation where no Secret Service daemon is running. Whether that fallback case is real for the target environment decides it. The wrapper is designed so this stays a one-file change.
-- **Hand-written SQL versus `sqlc`.** Hand-written is assumed above and keeps the dependency count and build steps minimal. `sqlc` generates typed Go from the same SQL and would recover a slice of the compile-time safety the flattened domain gives up, at the cost of a code-generation step in the build. Given how much weight rests on tests rather than types, this deserves an explicit answer rather than a default.
-- **Migration runner.** A hand-rolled stepper over `PRAGMA user_version` with embedded `.sql` files is roughly forty lines and adds no dependency; `goose` or `golang-migrate` are standard and add one. Leaning hand-rolled on the same minimal-dependency grounds as the rest.
-- **Package name for the domain.** `internal/core` reads as `core.TimeEntry`, which is serviceable but generic. `internal/tracking` is an alternative. Cosmetic, but it appears in every file in the project.
-- **Duplicate on crash.** If the process dies after the remote accepts a `Create` but before the local transaction commits, the entries stay pending and the next upload sends them again. Options: accept and document it; or write an in-flight marker before each call and, on restart, list those units for the user to check against the remote before retrying.
-- **Pending entries on a departed task.** Plan them and let the `Create` fail, or leave them out of the plan and show them on the confirmation screen? Leaving them out avoids a call that is known to fail; both routes end in the attention list.
-- **Note concatenation.** Separator, and what happens when the result exceeds a remote's field limit (Jira worklog comments, Toggl descriptions). Truncation belongs in the adapter, but whether truncation is acceptable is a product call.
-- **Modes not yet designed.** Local task management (create, rename, nest, archive), settings and integration setup (base URL, credentials into the keyring), purge, and the trigger for fetching remote tasks (startup, keystroke, or both) have no place in the mode structure above.
-- **Database location.** Presumably the platform's user data directory (`os.UserConfigDir` or an XDG data path), with an override flag.
+- **Note length limits.** A combined note can exceed a remote's field limit (Jira worklog comment, Toggl description, Redmine comment). Truncate in the adapter with a marker, or fail the unit so the user shortens the notes?

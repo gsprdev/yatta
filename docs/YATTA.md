@@ -56,7 +56,7 @@ YATTA is one persistent application, not a set of invocations. Because it is exp
 
 - **The current timer** — what is running, against which task, and for how long. This is the single most-consulted piece of information in the product and it must never require a keystroke to see.
 - **Today's accumulated time** — a running total for the current local day. This is not reporting or analytics; it is the ambient feedback that makes under-recording visible while there is still time to fix it.
-- **Attention indicators** — counts for pending uploads, failed uploads, and not-yet-uploaded entries whose remote task has departed.
+- **Attention indicators** — counts for pending uploads, failed uploads, not-yet-uploaded entries whose remote task has departed, and entries with no task.
 
 Everything else is reached by keystroke from this resting view.
 
@@ -64,11 +64,12 @@ Everything else is reached by keystroke from this resting view.
 
 - Each entry records a time block (via start/stop timer or manual entry).
 - Duration is always derived: `duration = end − start`. There is no separate duration field.
-- Each entry **should** have an associated task.
+- Each entry **should** have an associated task. A task is required only for upload: an entry, or a running timer, may be recorded without one and is flagged as unassigned until the user picks a task.
 - Each entry **may** have a free-text note.
 - The UI works exclusively with **local records**. All editing, display, and interaction is against the local copy.
 - Entries can be freely edited until they have been uploaded. Once uploaded, an entry is locked: it remains visible for review and recall, but it cannot be changed.
-- YATTA does not delete individual entries. Local records do have a natural lifespan once their time has been reported, but when they stop being useful is the user's call, so cleanup is a deliberate **purge** of everything before a user-chosen date.
+- An entry that has not been uploaded can be discarded. An uploaded entry is never deleted individually.
+- Local records have a natural lifespan once their time has been reported, but when they stop being useful is the user's call, so cleanup is a deliberate **purge** of every entry before a user-chosen date, in any state. Purge warns before it runs when the range holds entries that were never uploaded: a plain warning for pending or unassigned entries, which may be normal for how the user works, and a louder one for failed entries, which are unresolved errors.
 - **Search and recall are primary interactions, not conveniences.** Finding an earlier entry, filtering the list, and resuming a recent task are among the most frequent actions in daily use — a timer is far more often restarted against something already tracked than created from nothing. Filtering and resume-from-recent must be immediate.
 - Upload failures must be discoverable. YATTA provides an **error list** enumerating entries whose last upload failed, each with a *go-to* action that jumps to the affected entry in the primary time entry interface. The error list is purely for discovery and navigation — it is not a sync queue, and every correction is made on the entry itself in the primary UI. A failed entry was never uploaded, so it is still editable. When aggregation combined several entries into one failed upload, all of them appear in the error list, since all are affected by the same failure.
 
@@ -119,6 +120,7 @@ Entries on remote tasks that have not yet been uploaded are **pending**. There i
 - An upload action is not tied to any particular reporting period.
 - The user may optionally specify an **end date (inclusive)** to limit which pending entries are included in a given upload — for example, uploading only through last Sunday while leaving the current week pending.
 - No minimum scope is implied; the default is all pending entries.
+- Entries on a departed remote task are attempted like any other and fail, landing in the error list. That is deliberate: the task must be reassigned before that time can be uploaded, and the failure is what makes that visible.
 - Upload is a blocking operation. While it runs, the user watches its per-entry results arrive and cannot edit entries. One rejected record does not abort the rest: each record succeeds or fails on its own.
 
 ---
@@ -151,6 +153,8 @@ Rounding and minimums are evaluated on the time a remote record will carry — a
   - Round up to minimum, or
   - Exclude it from the upload
 
+A duration that rounds to zero is always excluded, whether or not a minimum is configured.
+
 An excluded entry or group is not left pending. It is recorded as **handled with no upload** — a sentinel remote record with nothing sent — and the entries are locked like any uploaded entry. Exclusions are listed on the upload confirmation before anything is sent. Leaving them pending instead would make them reappear at every upload and keep the pending count from ever reaching zero.
 
 ### Aggregation
@@ -164,7 +168,11 @@ Aggregation exists because remote systems often impose conventions that have not
 - None *(default)* — every local entry produces its own remote record.
 - By task and day — pending entries targeting the same remote task, falling on the same local calendar day, are grouped into one remote record.
 
-An aggregate record's start is the earliest member's start; its duration is the group's summed duration with the policy applied; its note is the distinct member notes concatenated in start order.
+An aggregate record's start is the earliest member's start; its duration is the group's summed duration with the policy applied.
+
+Its note combines the members' notes in start order: each note is trimmed of surrounding whitespace, empty and duplicate notes are dropped, every note but the last gets a trailing period if it does not already end with one, and the notes are joined with a single space. `Fixed login bug` and `Wrote tests.` become `Fixed login bug. Wrote tests.`
+
+Aggregation groups only the entries in one upload. Entries for a task and day that was already uploaded are grouped on their own the next time, so uploading twice in one day produces two remote records for that task and day. That is the expected result of one-way upload, not a condition YATTA detects or corrects.
 
 "Day" is the local calendar day (device timezone) at the time of upload — not the UTC date the instant is stored under. This is consistent with local timezone being applied only at the UI render/interaction boundary and never persisted, but it is worth stating explicitly, since a grouping boundary near midnight is exactly the kind of place a UTC/local mismatch would silently misgroup entries.
 
@@ -190,6 +198,7 @@ Aggregation is a deliberately narrow concern, separate from full cross-system ti
 | Always-visible current timer and today's running total | Mobile clients |
 | Search, filter, and resume-from-recent over entries | Cloud sync, hosted backend, or any multi-machine replication |
 | Hierarchical local task management | Browser-based interface |
+| Finding remote tasks by their label (e.g. a ticket number) | |
 | One optional remote integration | Reading existing entries from remote |
 | Deliberate, one-way upload with optional date bound | Reporting / analytics UI beyond the current-day total |
 | Rounding at upload time (stored as remote record) | Full cross-system timesheet reporting (e.g. summarizing ticketed and non-ticketed work into one NetSuite-style total) |
@@ -209,7 +218,19 @@ Three integrations are planned to drive the abstraction layer design:
 | Redmine | Project/issue tracker | Task hierarchy: Project → Version → Issue |
 | Toggl | Time tracker | Task hierarchy: Workspace → Client → Project → Task; represents a peer tool rather than an issue tracker |
 
+Remote tasks are found by their human-facing label as well as their name — a Jira key such as `PROJ-123`, a Redmine issue number such as `#4521`.
+
 Toggl is intentionally included as a third integration type — it is a time-tracking-first system rather than an issue tracker, which will stress-test the integration abstraction differently than Jira or Redmine.
+
+---
+
+## Definition of Done
+
+This iteration is done when, against each of Jira, Redmine, and Toggl, a user can:
+
+- start and stop a timer, and resume one from a recent entry;
+- find a remote task by name or by its label (e.g. ticket number) and record time against it;
+- upload that time successfully.
 
 ---
 
@@ -223,7 +244,13 @@ Toggl is intentionally included as a third integration type — it is a time-tra
 - **Multiple simultaneous remotes, or one entry feeding several remotes:** Rejected. A single local entry maps to at most one remote, matching the "zero or one active integrations" principle. Letting one entry feed several remotes at once (e.g. Jira and NetSuite together) would be difficult to build an interface for, track, or reason about — and it isn't what the underlying need actually calls for.
 - **Full cross-system timesheet reporting (the NetSuite case):** Out of scope, and deliberately not modeled as an extension of the remote upload mechanism. Summarizing ticketed and non-ticketed work into one full total belongs to a distinct reporting/summarization capability, not to the entry-to-remote-record relationship — the same underlying reason two separate systems (e.g. Jira and NetSuite) exist for it today rather than one.
 - **Upload is one-way and final.** YATTA only ever creates remote records. An uploaded entry is locked, and corrections to uploaded time are made in the remote system of record. This removes remote update and delete entirely, and with it the questions of re-uploading edited groups, stale remote copies, and records whose members have left.
-- **No per-entry deletion; purge by date.** Entries are not deleted individually. The user clears out old local records by purging everything before a chosen date.
+- **Discard before upload; purge by date after.** An entry not yet uploaded can be discarded. Uploaded entries are never deleted individually; the user clears out old local records by purging every entry before a chosen date. Purge covers every state, and warns first when the range holds entries never uploaded — louder for failed entries than for pending or unassigned ones.
+- **A task is required only for upload.** Unassigned entries and timers are allowed and counted as needing attention, since recording first and classifying later is the lowest-friction path.
+- **Today's running total is in scope.** It belongs to the always-visible working surface, not to reporting.
+- **Zero after rounding is excluded.** It gets the same sentinel as a below-minimum exclusion.
+- **Entries on departed tasks fail at upload.** They are not filtered out beforehand; the failure puts them in the error list, where the user reassigns them.
+- **Repeated uploads are independent.** Two uploads on the same day produce two records for the same task and day. This is expected, not handled.
+- **Known limitation: duplicate after a crash.** If YATTA stops after the remote accepts a record but before the result is saved locally, those entries stay pending and the next upload sends them again. No reasonable prevention exists for a create-only interface; the user corrects the duplicate in the remote system.
 - **Aggregation start/anchor:** An aggregate remote record's reported start is the earliest contributing local entry's start; its duration is the sum of the members' raw durations, with rounding and minimum applied once to that sum. Its note is the distinct member notes concatenated.
 - **Below-minimum exclusion is recorded, not deferred.** An excluded entry or group gets a sentinel remote record marking it handled with nothing sent, so it does not stay pending forever.
 - **Upload blocks.** Entries cannot be edited while an upload runs, so what is uploaded is exactly what was confirmed.
@@ -233,9 +260,4 @@ Toggl is intentionally included as a third integration type — it is a time-tra
 
 ## Open Questions
 
-- **Is today's running total genuinely in scope?** It is specified above as a property of the always-present working surface rather than as reporting, on the grounds that it changes recording behavior while the day is still correctable. The boundary against "reporting / analytics UI" is real but thin, and the answer determines whether a week-to-date total or a per-task daily breakdown is a natural extension or a scope violation. If the total is judged to be reporting, it should be removed from Core Concepts and Scope Boundaries together.
-- **Can a pending entry be discarded?** With no per-entry deletion, an entry recorded by mistake can only be edited, never removed, until a purge reaches its date. A mistaken remote-task entry would have to be uploaded or moved to a local task. Allowing discard of pending entries only would not touch anything the remote system has seen.
-- **Late entries on an already-uploaded day.** Under task+day aggregation, an entry added for a task and day that were already uploaded produces a second remote record for that day, which breaks a one-worklog-per-day convention. Options: accept it; warn at confirmation; or default the upload bound to yesterday, so the current day is not uploaded while still being worked.
-- **What purge removes.** Only uploaded entries and entries on local tasks, or also pending and failed entries before the date? Purging unuploaded remote time loses it silently.
-- **Rounding to zero with no minimum set.** A short entry rounded down, or to nearest, can reach zero. Treat zero as below any minimum and record it as excluded, or upload a zero-duration record, which most remotes reject?
-- **Is a task required?** "Each entry *should* have an associated task" reads as optional, but the data model requires one, including for a running timer. Starting a timer before choosing what it is for is the lowest-friction path.
+None at present.

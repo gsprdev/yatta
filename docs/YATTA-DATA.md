@@ -42,6 +42,7 @@ One table holds both local and remote tasks. `integration IS NULL` means the tas
 | `archived_at` | INTEGER | nullable; local tasks only. non-null ⇒ archived |
 | `integration` | TEXT | nullable. NULL ⇒ local task. `'jira'` \| `'redmine'` \| `'toggl'` |
 | `native_id` | TEXT | id as known to the remote system; NULL for local tasks |
+| `label` | TEXT | nullable; human-facing identifier shown and searched in the picker (`'PROJ-123'`, `'#4521'`); NULL for local tasks and for remotes without one |
 | `node_type` | TEXT | integration-specific label (`'epic'`, `'issue'`, …); NULL for local |
 | `extra` | TEXT | JSON blob of integration-specific fields; NULL for local |
 | `departed_at` | INTEGER | nullable; remote tasks only. non-null ⇒ absent from the latest fetch |
@@ -52,7 +53,7 @@ One table holds both local and remote tasks. `integration IS NULL` means the tas
 
 ```sql
 CHECK (integration IS NULL OR native_id IS NOT NULL)
-CHECK (integration IS NOT NULL OR (native_id IS NULL AND node_type IS NULL
+CHECK (integration IS NOT NULL OR (native_id IS NULL AND label IS NULL AND node_type IS NULL
        AND extra IS NULL AND departed_at IS NULL AND fetched_at IS NULL))
 CHECK (integration IS NULL OR archived_at IS NULL)
 ```
@@ -73,14 +74,14 @@ The cost is a wider table with columns that apply to only one kind of row, and o
 
 ### `time_entries`
 
-The authoritative local record. Editable until it is linked to a remote record, then locked. The upload process only ever sets the link.
+The authoritative local record. Editable, and discardable, until it is linked to a remote record; then locked. The upload process only ever sets the link.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | TEXT PK | UUID |
 | `start` | INTEGER NOT NULL | Unix seconds, UTC |
 | `duration_s` | INTEGER NOT NULL | block length in seconds |
-| `task_id` | TEXT NOT NULL | `REFERENCES tasks(id)` |
+| `task_id` | TEXT | nullable; `REFERENCES tasks(id)`. NULL ⇒ unassigned: allowed, never uploaded, counted for attention |
 | `note` | TEXT | nullable |
 | `remote_record_id` | TEXT | nullable; `REFERENCES remote_records(id)`. NULL until the entry is uploaded or excluded; non-null ⇒ locked. **Several rows may share one value** — that is how aggregation is represented. |
 | `upload_error` | TEXT | nullable; the error from the last failed upload attempt. Meaningful **only** while `remote_record_id IS NULL` |
@@ -98,13 +99,24 @@ The second constraint makes the mutual exclusion structural: a linked entry cann
 
 Application-enforced:
 
-- An entry whose task is local has `remote_record_id` and `upload_error` both NULL. This requires a cross-table check, so it is a store invariant with a test rather than a `CHECK`.
-- A linked entry is never updated. The store rejects the write; see Open Questions on making this a trigger.
+- An entry whose task is local or unassigned has `remote_record_id` and `upload_error` both NULL. This requires a cross-table check, so it is a store invariant with a test rather than a `CHECK`.
+- Discarding deletes an unlinked entry. The store refuses to discard a linked one; only purge deletes linked entries.
+
+Trigger-enforced — locking is the product's promise about uploaded time, so it is structural, and it also holds against hand-edits of the database:
+
+```sql
+CREATE TRIGGER entries_locked BEFORE UPDATE ON time_entries
+WHEN OLD.remote_record_id IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'entry is locked: already uploaded'); END;
+```
+
+Linking is an update of an unlinked row, so the trigger does not block it.
 
 **Reconstructing `core.TimeEntry.Upload`:**
 
 | Task | `remote_record_id` | Other | Resulting `UploadState` |
 |---|---|---|---|
+| none | NULL | — | `nil` |
 | local | NULL | — | `nil` |
 | remote | NULL | `upload_error` NULL | `{Pending, "", ""}` |
 | remote | NULL | `upload_error` set | `{Failed, upload_error, ""}` |
@@ -144,7 +156,7 @@ Single-row table holding the running timer, so it survives a restart and an acci
 |---|---|---|
 | `id` | INTEGER PK | always `1`; `CHECK (id = 1)` |
 | `start` | INTEGER NOT NULL | Unix seconds, UTC |
-| `task_id` | TEXT NOT NULL | `REFERENCES tasks(id)` |
+| `task_id` | TEXT | nullable; `REFERENCES tasks(id)`. A timer may run before its task is chosen |
 
 On stop, the row is consumed: a `time_entries` row is created with `duration_s = now - start`, and the timer row is deleted.
 
@@ -198,13 +210,15 @@ CREATE UNIQUE INDEX idx_tasks_native    ON tasks(integration, native_id)
                                         WHERE integration IS NOT NULL;
 ```
 
-`idx_entries_start DESC` backs the resting view, which is the most-recent-first list. `idx_entries_unlinked` backs the pending, failed, and departed counts in the always-visible status bar, which are recomputed on every mutation. `idx_tasks_native` is what makes reconciliation an upsert.
+`idx_entries_start DESC` backs the resting view, which is the most-recent-first list. `idx_entries_unlinked` backs the pending, failed, departed, and unassigned counts in the always-visible status bar, which are recomputed on every mutation. `idx_tasks_native` is what makes reconciliation an upsert.
 
 ---
 
 ## Purge
 
-The user removes old local data by choosing a cutoff date. Purge deletes `time_entries` starting before that local date, then any `remote_records` no longer referenced by an entry, in one transaction. Tasks are not purged directly: a departed remote task left unreferenced is hard-deleted by the next reconciliation, and local tasks are managed by the user. Which entries a purge may remove is an open question in `YATTA.md`.
+The user removes old local data by choosing a cutoff date. Purge deletes every `time_entries` row starting before that local date, in any state, then any `remote_records` no longer referenced by an entry, in one transaction. Tasks are not purged directly: a departed remote task left unreferenced is hard-deleted by the next reconciliation, and local tasks are managed by the user.
+
+Before confirming, the store counts the unlinked entries in the range so the interface can warn: failed entries (`upload_error IS NOT NULL`) get the louder warning; pending and unassigned entries the plainer one.
 
 ---
 
@@ -232,8 +246,10 @@ Each file is applied in a transaction, with `user_version` bumped in the same tr
 - **Exclusions are sentinel records** (`remote_id IS NULL`), so an excluded entry is linked, locked, and no longer pending, through the same mechanism as an uploaded one.
 - **Stale remote task references are reconciled, not wiped.** Referenced departed rows are retained with `departed_at`; unreferenced ones are hard-deleted. No display-name snapshot on entries is needed, since the retained row keeps both the reference and the display intact.
 - **Foreign keys and WAL enabled** at connection setup.
+- **Unassigned is a NULL `task_id`**, not a default bucket task. A bucket would be a special local task that must never be renamed, archived, or given children; NULL is already how SQLite says "no reference", and it maps to `TaskID == ""` in the domain.
+- **Locking is a trigger; the local-task rule stays a store invariant.** Locking protects uploaded time, including from hand-edits, and costs one trigger. The local-task rule needs a cross-table check on every write and guards nothing the remote has seen.
+- **`label` is a column; other integration fields stay in `extra`.** The picker filters on the label constantly, so it is worth a column; the rest is read only by the owning adapter. Revisit `extra` if the three integrations' fields diverge enough that the blob obscures more than it saves.
 
 ## Open Questions
 
-- **Whether the store invariants deserve triggers.** The local-task/upload-columns rule and the locking of linked entries are currently store invariants with tests, on the grounds that a single-writer local database does not need belt and braces. Triggers would make them structural at the cost of schema machinery, and would also catch changes from hand-editing the database — which the inspectability argument above makes marginally more likely. Locking is the stronger candidate, since it is the product's promise about uploaded time.
-- **Whether `extra` should become typed columns per integration.** Acceptable as a JSON blob while only one integration is active at a time and the set is small; worth revisiting if deserialization becomes hot or the three integrations' fields diverge enough that the blob obscures more than it saves.
+None at present.
