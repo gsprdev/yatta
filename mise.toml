@@ -1,0 +1,21 @@
+[tools]
+go = "1.25"
+
+[env]
+CGO_ENABLED = "0"
+
+[tasks.build]
+description = "Build the yatta binary"
+run = "go build ./cmd/yatta"
+
+[tasks.run]
+description = "Run yatta"
+run = "go run ./cmd/yatta"
+
+[tasks.test]
+description = "Run all tests"
+run = "go test ./..."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."

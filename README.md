@@ -1,12 +1,12 @@
 # yatta
 
-A user-focused time tracking client: a local-first, single-user terminal app for recording your own time honestly, and optionally uploading it to Jira, Redmine, or Toggl.
+A user-focused time tracking client: a local-first, single-user terminal app for recording your own time honestly, and, if you need to, uploading it to whatever reporting system your company requires. Jira, Redmine, and Toggl are supported today.
 
 ## Why yatta exists
 
 Most time reporting tools are built for the managers and analysts who read the data. The people actually entering time are left with unfamiliar interfaces, poor UX, and tooling shaped by the destination system rather than by the act of recording. Inaccurate reporting is often a direct consequence of poor tooling.
 
-yatta inverts that priority. Its core insight is that **the ideal local experience for honest time tracking is the same regardless of where that time ultimately gets reported.** Whether the destination is Jira, Redmine, Toggl, or nothing at all, your workflow is the same. yatta owns that local experience and treats remote systems as optional, downstream concerns.
+yatta inverts that priority. Its core insight is that **the ideal local experience for honest time tracking is the same regardless of where that time ultimately gets reported.** Whether the destination is Jira, Redmine, Toggl, some other system, or nothing at all, your workflow is the same. yatta owns that local experience and treats remote systems as optional, downstream concerns.
 
 ## What yatta is
 
@@ -29,9 +29,19 @@ This name reflects the joy and satisfaction we all feel when submitting our time
 Alternatively, it might stand for "Yet Another Time Tracking Application".
 We may never know which for certain.
 
-## Building and running
+## Getting started
 
-yatta is a single Go binary with no runtime dependencies:
+yatta is a single static Go binary with no runtime dependencies. The quickest route is [mise](https://mise.jdx.dev), which installs the pinned Go toolchain and provides the project's tasks:
+
+```sh
+git clone https://github.com/gsprdev/yatta
+cd yatta
+mise install   # installs the Go toolchain from mise.toml
+mise run build # produces ./yatta
+./yatta
+```
+
+Or, with Go 1.25 or newer already installed:
 
 ```sh
 CGO_ENABLED=0 go build ./cmd/yatta
@@ -39,7 +49,16 @@ CGO_ENABLED=0 go build ./cmd/yatta
 ./yatta --db x.db  # or somewhere else
 ```
 
-Press `?` for keys. Remote integrations (Jira, Redmine, Toggl) are set up under settings (`,`); credentials go to the OS keyring.
+Press `?` for keys. Remote integrations are set up under settings (`,`); credentials go to the OS keyring.
+
+### Development tasks
+
+| Command | What it does |
+|---|---|
+| `mise run build` | Build the `yatta` binary |
+| `mise run run` | Run yatta without leaving a binary behind |
+| `mise run test` | Run all tests |
+| `mise run vet` | Run `go vet` |
 
 ## Design documents
 
