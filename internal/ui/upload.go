@@ -34,7 +34,6 @@ type uploadModel struct {
 	plan    core.Plan
 	results []error // one per upload unit; nil until done or on success
 	done    []bool
-	next    int
 	failed  int
 }
 
@@ -186,7 +185,7 @@ func (m Model) uploadUnit(i int) tea.Cmd {
 		err := uploadOne(ad, st, task, unit)
 		if err != nil {
 			if serr := st.RecordFailure(unit, err); serr != nil {
-				err = fmt.Errorf("%v (and saving the failure: %v)", err, serr)
+				err = fmt.Errorf("%w (and saving the failure: %w)", err, serr)
 			}
 			return unitDoneMsg{i, err}
 		}

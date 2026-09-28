@@ -262,8 +262,8 @@ func (m Model) settingsDone(screen settingsScreen) (tea.Model, tea.Cmd) {
 	switch screen {
 	case screenPolicy:
 		var inc, min int
-		fmt.Sscan(v.increment, &inc)
-		fmt.Sscan(v.minimum, &min)
+		_, _ = fmt.Sscan(v.increment, &inc)
+		_, _ = fmt.Sscan(v.minimum, &min)
 		p := core.Policy{
 			Increment: time.Duration(inc) * time.Minute, Direction: core.Direction(v.direction),
 			Minimum: time.Duration(min) * time.Minute, Aggregate: core.AggKey(v.aggregate),

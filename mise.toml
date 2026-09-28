@@ -1,5 +1,6 @@
 [tools]
 go = "1.25"
+golangci-lint = "2"
 
 [env]
 CGO_ENABLED = "0"
@@ -19,3 +20,15 @@ run = "go test ./..."
 [tasks.vet]
 description = "Run go vet"
 run = "go vet ./..."
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run ./..."
+
+[tasks.fmt]
+description = "Format code with gofmt"
+run = "golangci-lint fmt ./..."
+
+[tasks.check]
+description = "Everything CI-worthy: lint, vet, test"
+depends = ["lint", "vet", "test"]
