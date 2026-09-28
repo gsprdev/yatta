@@ -126,9 +126,16 @@ func (s *settingsModel) open(screen settingsScreen) tea.Cmd {
 		))
 	case screenIntegration:
 		v.token = ""
-		tokenDesc := "Stored in the OS keyring, never in the database."
-		if v.stored != nil {
-			tokenDesc += "\nLeave empty to keep the stored " + v.storedFor + " token."
+		tokenDesc := func() string {
+			var d string
+			if v.integration == "jira" {
+				d = jira.TokenHelp + "\n"
+			}
+			d += "Stored in the OS keyring, never in the database."
+			if v.stored != nil && v.integration == v.storedFor {
+				d += "\nLeave empty to keep the stored " + v.storedFor + " token."
+			}
+			return d
 		}
 		s.form = huh.NewForm(
 			huh.NewGroup(huh.NewSelect[string]().Title("Remote system").Options(
@@ -161,7 +168,7 @@ func (s *settingsModel) open(screen settingsScreen) tea.Cmd {
 					Description("Empty for: "+redmine.DefaultQuery).Value(&v.query),
 			).WithHideFunc(func() bool { return v.integration != "redmine" }),
 			huh.NewGroup(
-				huh.NewInput().Title("API token").Description(tokenDesc).
+				huh.NewInput().Title("API token").DescriptionFunc(tokenDesc, &v.integration).
 					EchoMode(huh.EchoModePassword).Value(&v.token).
 					Validate(func(t string) error {
 						if strings.TrimSpace(t) == "" && (v.stored == nil || v.integration != v.storedFor) {

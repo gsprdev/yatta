@@ -9,6 +9,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -22,6 +23,16 @@ import (
 const DefaultQuery = "resolution = Unresolved AND (assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser()) ORDER BY key"
 
 const pageSize = 100
+
+// TokenURL is where a Jira Cloud user creates an API token.
+const TokenURL = "https://id.atlassian.com/manage-profile/security/api-tokens"
+
+// TokenHelp says which token to create. A token "with scopes" is refused:
+// it works only through api.atlassian.com, not the site URL used here. A
+// classic token acts with the account's own permissions, which must include
+// browsing the projects and logging work on their issues.
+const TokenHelp = "Jira Cloud: \"Create API token\" (not \"with scopes\") at\n" + TokenURL + "\n" +
+	"Jira Data Center: a personal access token from your profile."
 
 type Adapter struct {
 	c            remote.Client
@@ -57,6 +68,11 @@ func (a *Adapter) Verify(ctx context.Context) (string, error) {
 		EmailAddress string `json:"emailAddress"`
 	}
 	if err := a.c.Do(ctx, http.MethodGet, a.api()+"/myself", nil, &me); err != nil {
+		var re *remote.Error
+		if a.cloud && errors.As(err, &re) && re.Status == http.StatusUnauthorized {
+			return "", fmt.Errorf("%s: %w (the email must be exactly your Atlassian account's, "+
+				"and the token one made with \"Create API token\" at %s)", a.credential(), err, TokenURL)
+		}
 		return "", fmt.Errorf("%s: %w", a.credential(), err)
 	}
 	who := me.DisplayName

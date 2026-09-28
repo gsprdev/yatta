@@ -126,7 +126,11 @@ func TestJiraCloudNeedsEmail(t *testing.T) {
 	if got := d.model().View(); !strings.Contains(got, "Jira Cloud needs your account email") {
 		t.Errorf("an empty email was accepted for a Cloud site:\n%s", got)
 	}
-	d.keys("me@example.com", "enter", "enter", "enter") // email; query; kept token
+	d.keys("me@example.com", "enter", "enter") // email; query
+	if got := d.model().View(); !strings.Contains(got, jira.TokenURL) {
+		t.Errorf("the token field does not say where to create a token:\n%s", got)
+	}
+	d.keys("enter") // kept token
 	var cred Credential
 	must(t, json.Unmarshal([]byte(keys["jira"]), &cred))
 	if cred != (Credential{User: "me@example.com", Token: "tok"}) {

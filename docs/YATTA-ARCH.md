@@ -371,7 +371,7 @@ For diagnosis, `yatta --debug` appends every remote request and response to `deb
 
 | Adapter | Tasks fetched | Where time is recorded |
 |---|---|---|
-| Jira | Issues matching the configured JQL (default: unresolved, and assigned to, reported by, or watched by the user), under their project and, where Jira reports one, their parent issue. Label: the issue key | A worklog on an issue. Cloud (email + API token) uses REST v3; Data Center (personal access token, no email) uses REST v2 |
+| Jira | Issues matching the configured JQL (default: unresolved, and assigned to, reported by, or watched by the user), under their project and, where Jira reports one, their parent issue. Label: the issue key | A worklog on an issue. Cloud (email + classic API token, as basic auth) uses REST v3; Data Center (personal access token, no email, as a bearer token) uses REST v2 |
 | Redmine | Every visible project; issues matching the configured filter (default: open and assigned to the user), under their target version where they have one. Label: `#id` | A time entry on an issue or a project, dated by the local day. An instance with no default activity rejects it, which surfaces as an ordinary failure |
 | Toggl | Workspaces, clients, active projects, and active tasks (tasks only where the plan includes them) | A time entry in the workspace, on the project and task where chosen |
 
@@ -528,6 +528,7 @@ The database is `yatta.db` in the platform's per-user data directory: `$XDG_DATA
 - **No overlap validation in `core`.** `Group` does not validate spans and `PlanUpload` has no abort path. A remote that genuinely cares enforces it inside its own adapter, where a rejection is an ordinary per-op failure.
 - **Credentials in the OS keyring, never in SQLite.**
 - **Integration setup edits in place and verifies on connect.** Re-entering the whole configuration to change a query invited mistakes: an email left empty silently switched Jira from Cloud to Data Center, which showed up only as a fetch with no results. The form pre-fills the stored values, keeps the stored token when the field is left empty, and each connection is checked with `Adapter.Verify` so the account and API in use are visible.
+- **Jira Cloud takes a classic API token, not a scoped one.** A Cloud API token is the password in basic auth with the account email, not a bearer token, so the email is required and must match the account exactly. A token "with scopes" works only through the `api.atlassian.com/ex/jira/{cloudId}` gateway, not the site URL YATTA uses, so it is refused with a 401. A classic token acts with the account's own permissions: browsing the projects in the query and logging work on their issues. The token field links to where tokens are made, and a Cloud 401 repeats the link. Supporting scoped tokens would mean discovering the cloud ID and routing through the gateway; revisit if Atlassian retires classic tokens. OAuth is ruled out: its redirect needs a local listener.
 - **Debug tracing is an opt-in flag, not a setting.** It is used rarely and while diagnosing, and a flag keeps it out of the database. The trace records bodies, and credentials only by fingerprint: "no key sent" and "the wrong key sent" look identical in a trace that omits them entirely.
 
 ## Open Questions

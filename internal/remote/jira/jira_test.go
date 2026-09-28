@@ -45,6 +45,8 @@ func server(t *testing.T, responses ...string) (*httptest.Server, *[]call) {
 			code = 201
 		case "400":
 			code = 400
+		case "401":
+			code = 401
 		}
 		w.WriteHeader(code)
 		io.WriteString(w, resp)
@@ -212,5 +214,16 @@ func TestVerifyRejectionNamesCredential(t *testing.T) {
 	got := New("https://example.atlassian.net", "", "tok", "").credential()
 	if !strings.Contains(got, "no account email is set, and Jira Cloud needs one") {
 		t.Errorf("credential() = %q; want the missing email called out", got)
+	}
+}
+
+// A Cloud 401 points at the usual causes and where to make a token.
+func TestVerifyUnauthorizedHint(t *testing.T) {
+	srv, _ := server(t, `401 {"errorMessages":["Client must be authenticated to access this resource."]}`)
+	_, err := New(srv.URL, "me@exmaple.com", "tok", "").Verify(context.Background())
+	for _, want := range []string{"as me@exmaple.com", "HTTP 401", "Create API token", TokenURL} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v; want it to contain %q", err, want)
+		}
 	}
 }
