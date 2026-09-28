@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -102,7 +103,15 @@ func dataDir() (string, error) {
 func newAdapter(cfg *store.IntegrationConfig, cred ui.Credential) (remote.Adapter, error) {
 	switch cfg.Integration {
 	case "jira":
-		return jira.New(cfg.BaseURL, cred.User, cred.Token, cfg.TaskQuery), nil
+		// What kind of Jira the site is decides the route and authentication,
+		// so it is asked each time rather than stored.
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		site, err := jira.Probe(ctx, cfg.BaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("could not reach %s: %w", cfg.BaseURL, err)
+		}
+		return jira.New(site, cred.User, cred.Token, cfg.TaskQuery), nil
 	case "redmine":
 		return redmine.New(cfg.BaseURL, cred.Token, cfg.TaskQuery, time.Local)
 	case "toggl":

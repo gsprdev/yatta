@@ -1,8 +1,12 @@
 // Package jira uploads time as Jira worklogs and fetches issues as tasks.
 //
-// Jira Cloud is used when an account email is given (basic auth with an API
-// token, REST v3). Without one, the token is sent as a bearer personal access
-// token to REST v2, as Jira Data Center expects.
+// Which Jira a site runs is found by Probe, not asked of the user. Jira Cloud
+// (hosted by Atlassian) takes the account email and an API token as basic
+// auth, on REST v3. A scoped token, the least-privilege choice, is accepted
+// only through Atlassian's API gateway, so Cloud requests go there when the
+// site's cloud ID is known; a classic token is accepted only at the site
+// itself. Jira Data Center (run by the company itself) takes a personal
+// access token as a bearer token, on REST v2.
 package jira
 
 import (
@@ -27,27 +31,102 @@ const pageSize = 100
 // TokenURL is where a Jira Cloud user creates an API token.
 const TokenURL = "https://id.atlassian.com/manage-profile/security/api-tokens"
 
-// TokenHelp says which token to create. A token "with scopes" is refused:
-// it works only through api.atlassian.com, not the site URL used here. A
-// classic token acts with the account's own permissions, which must include
-// browsing the projects and logging work on their issues.
-const TokenHelp = "Jira Cloud: \"Create API token\" (not \"with scopes\") at\n" + TokenURL + "\n" +
-	"Jira Data Center: a personal access token from your profile."
+// Scopes are all a Cloud token needs: who am I (/myself), searching issues,
+// and adding worklogs.
+const Scopes = "read:jira-user  read:jira-work  write:jira-work"
+
+// CloudTokenHelp and DataCenterTokenHelp say how to make the token, in the
+// words of the menus the user clicks through.
+const (
+	CloudTokenHelp = "Click your profile picture → Manage account → Security →\n" +
+		"Create and manage API tokens. Or open:\n" + TokenURL + "\n" +
+		"Choose \"Create API token with scopes\", app Jira, and only these scopes:\n" +
+		"  " + Scopes
+	DataCenterTokenHelp = "Click your profile picture → Profile → Personal Access Tokens →\n" +
+		"Create token. Give it an expiry date."
+)
+
+// gateway is Atlassian's API gateway. A variable so tests can replace it.
+var gateway = "https://api.atlassian.com"
+
+// Site is a Jira address and what Probe learned of it.
+type Site struct {
+	URL     string // the site's root, without any page path
+	Cloud   bool   // hosted by Atlassian
+	CloudID string // the Cloud site's ID, for the API gateway; "" if unknown
+}
+
+// Guess is Probe without the network: an atlassian.net host is Cloud.
+// raw may be any address copied from the browser.
+func Guess(raw string) Site {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return Site{URL: strings.TrimRight(strings.TrimSpace(raw), "/")}
+	}
+	origin := u.Scheme + "://" + u.Host
+	if strings.HasSuffix(u.Hostname(), ".atlassian.net") {
+		return Site{URL: origin, Cloud: true}
+	}
+	// Data Center may be installed under a path such as /jira; keep it, but
+	// not a page within it.
+	path := u.Path
+	for _, page := range []string{"/browse/", "/secure/", "/projects/", "/issues/", "/plugins/", "/rest/"} {
+		if i := strings.Index(path+"/", page); i >= 0 {
+			path = path[:i]
+		}
+	}
+	return Site{URL: origin + strings.TrimRight(path, "/")}
+}
+
+// Probe finds whether raw is Jira Cloud by asking: only a Cloud site answers
+// /_edge/tenant_info, without authentication, with its cloud ID. An error
+// means the site could not be reached, and the Site returned is Guess's.
+func Probe(ctx context.Context, raw string) (Site, error) {
+	s := Guess(raw)
+	u, err := url.Parse(s.URL)
+	if err != nil || u.Host == "" {
+		return s, fmt.Errorf("not a web address: %q", raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.Scheme+"://"+u.Host+"/_edge/tenant_info", nil)
+	if err != nil {
+		return s, err
+	}
+	req.Header.Set("User-Agent", "yatta")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return s, err
+	}
+	defer resp.Body.Close()
+	var info struct {
+		CloudID string `json:"cloudId"`
+	}
+	if resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&info) == nil && info.CloudID != "" {
+		return Site{URL: u.Scheme + "://" + u.Host, Cloud: true, CloudID: info.CloudID}, nil
+	}
+	return s, nil
+}
 
 type Adapter struct {
 	c            remote.Client
-	cloud        bool
+	site         Site
+	classic      bool // a Cloud token accepted only at the site: unscoped
 	query        string
 	email, token string // for describing the credential, never for display in full
 }
 
-func New(baseURL, email, token, query string) *Adapter {
-	a := &Adapter{cloud: email != "", query: query, email: email, token: token}
-	if a.query == "" {
-		a.query = DefaultQuery
+// New builds an adapter for site, as found by Probe. email is required for
+// Cloud and unused for Data Center.
+func New(site Site, email, token, query string) *Adapter {
+	a := &Adapter{site: site, query: cmp.Or(query, DefaultQuery), email: email, token: token}
+	// Without the cloud ID the gateway cannot be used, and at the site only a
+	// classic token is accepted.
+	a.classic = site.Cloud && site.CloudID == ""
+	base := site.URL
+	if site.Cloud && site.CloudID != "" {
+		base = gateway + "/ex/jira/" + site.CloudID
 	}
-	a.c = remote.Client{BaseURL: baseURL, Auth: func(r *http.Request) {
-		if a.cloud {
+	a.c = remote.Client{BaseURL: base, Auth: func(r *http.Request) {
+		if site.Cloud {
 			r.SetBasicAuth(email, token)
 		} else {
 			r.Header.Set("Authorization", "Bearer "+token)
@@ -58,20 +137,30 @@ func New(baseURL, email, token, query string) *Adapter {
 
 func (a *Adapter) Integration() string { return "jira" }
 
-// Verify names the account and which of Cloud or Data Center is assumed: an
-// account email selects Cloud, so a missing one shows here, not as an empty
-// fetch.
+type myself struct {
+	Name         string `json:"name"`
+	DisplayName  string `json:"displayName"`
+	EmailAddress string `json:"emailAddress"`
+}
+
+// Verify names the account. A Cloud token refused by the gateway is tried at
+// the site, where only a classic (unscoped) token is accepted; if that works
+// the adapter stays there, and the result says the token has full access.
 func (a *Adapter) Verify(ctx context.Context) (string, error) {
-	var me struct {
-		Name         string `json:"name"`
-		DisplayName  string `json:"displayName"`
-		EmailAddress string `json:"emailAddress"`
+	var me myself
+	err := a.c.Do(ctx, http.MethodGet, a.api()+"/myself", nil, &me)
+	if err != nil && unauthorized(err) && a.site.Cloud && a.c.BaseURL != a.site.URL {
+		atSite := a.c
+		atSite.BaseURL = a.site.URL
+		var me2 myself
+		if atSite.Do(ctx, http.MethodGet, a.api()+"/myself", nil, &me2) == nil {
+			a.c, a.classic, me, err = atSite, true, me2, nil
+		}
 	}
-	if err := a.c.Do(ctx, http.MethodGet, a.api()+"/myself", nil, &me); err != nil {
-		var re *remote.Error
-		if a.cloud && errors.As(err, &re) && re.Status == http.StatusUnauthorized {
-			return "", fmt.Errorf("%s: %w (the email must be exactly your Atlassian account's, "+
-				"and the token one made with \"Create API token\" at %s)", a.credential(), err, TokenURL)
+	if err != nil {
+		if unauthorized(err) && a.site.Cloud {
+			return "", fmt.Errorf("%s: %w (check the email is exactly your Atlassian account's, "+
+				"and the token has the scopes %s)", a.credential(), err, Scopes)
 		}
 		return "", fmt.Errorf("%s: %w", a.credential(), err)
 	}
@@ -82,27 +171,35 @@ func (a *Adapter) Verify(ctx context.Context) (string, error) {
 	if who == "" {
 		return "", fmt.Errorf("Jira did not identify the account")
 	}
-	if a.cloud {
-		return "Jira Cloud (REST v3) as " + who, nil
+	switch {
+	case a.classic:
+		return "Jira Cloud as " + who + " · ⚠ unscoped token: it can do anything your account can; a scoped token is safer", nil
+	case a.site.Cloud:
+		return "Jira Cloud as " + who, nil
 	}
-	return "Jira Data Center (REST v2, access token) as " + who, nil
+	return "Jira Data Center as " + who, nil
 }
 
-// credential says what Verify sent, so a rejection shows which mode, account,
-// and token were tried.
+func unauthorized(err error) bool {
+	var re *remote.Error
+	return errors.As(err, &re) && (re.Status == http.StatusUnauthorized || re.Status == http.StatusForbidden)
+}
+
+// credential says what Verify sent, so a rejection shows which kind of Jira,
+// account, and token were tried.
 func (a *Adapter) credential() string {
-	if a.cloud {
-		return fmt.Sprintf("Jira Cloud (REST v3), basic auth as %s with API token %s", a.email, remote.Fingerprint(a.token))
+	if !a.site.Cloud {
+		return fmt.Sprintf("Jira Data Center at %s, personal access token %s", a.site.URL, remote.Fingerprint(a.token))
 	}
-	s := fmt.Sprintf("Jira Data Center (REST v2), bearer access token %s", remote.Fingerprint(a.token))
-	if u, err := url.Parse(a.c.BaseURL); err == nil && strings.HasSuffix(u.Hostname(), ".atlassian.net") {
-		s += "; no account email is set, and Jira Cloud needs one"
+	s := fmt.Sprintf("Jira Cloud, %s with API token %s", cmp.Or(a.email, "(no email)"), remote.Fingerprint(a.token))
+	if a.site.CloudID == "" {
+		s += ", at the site only (its cloud ID is unknown, so a scoped token cannot work)"
 	}
 	return s
 }
 
 func (a *Adapter) api() string {
-	if a.cloud {
+	if a.site.Cloud {
 		return "/rest/api/3"
 	}
 	return "/rest/api/2"
@@ -185,7 +282,7 @@ func (a *Adapter) FetchTasks(ctx context.Context) ([]core.FetchedTask, error) {
 func (a *Adapter) search(ctx context.Context) ([]issue, error) {
 	fields := []string{"summary", "issuetype", "project", "parent"}
 	var all []issue
-	if a.cloud {
+	if a.site.Cloud {
 		token := ""
 		for {
 			body := map[string]any{"jql": a.query, "fields": fields, "maxResults": pageSize}
@@ -235,7 +332,7 @@ func (a *Adapter) Create(ctx context.Context, task core.Task, u core.Unit) (stri
 		"timeSpentSeconds": int64(u.Duration.Seconds()),
 	}
 	if u.Note != "" {
-		if a.cloud {
+		if a.site.Cloud {
 			body["comment"] = adf(u.Note)
 		} else {
 			body["comment"] = u.Note

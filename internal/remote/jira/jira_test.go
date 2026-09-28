@@ -68,7 +68,7 @@ const page2 = `200 {"issues":[
 
 func TestFetchCloud(t *testing.T) {
 	srv, calls := server(t, page1, page2)
-	tasks, err := New(srv.URL, "me@example.com", "tok", "").FetchTasks(context.Background())
+	tasks, err := New(Site{URL: srv.URL, Cloud: true}, "me@example.com", "tok", "").FetchTasks(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestFetchDataCenter(t *testing.T) {
 	srv, calls := server(t,
 		`200 {"issues":[{"id":"1","key":"A-1","fields":{"summary":"x","issuetype":{"name":"Task"},"project":{"id":"9","key":"A","name":"A"}}}],"total":2}`,
 		`200 {"issues":[{"id":"2","key":"A-2","fields":{"summary":"y","issuetype":{"name":"Task"},"project":{"id":"9","key":"A","name":"A"}}}],"total":2}`)
-	tasks, err := New(srv.URL, "", "pat", "project = A").FetchTasks(context.Background())
+	tasks, err := New(Site{URL: srv.URL}, "", "pat", "project = A").FetchTasks(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func issueTask() core.Task {
 func TestCreateCloud(t *testing.T) {
 	srv, calls := server(t, `201 {"id":"5001"}`)
 	u := core.Unit{Start: time.Date(2026, 3, 2, 14, 0, 0, 0, time.UTC), Duration: 30 * time.Minute, Note: "Fixed it."}
-	id, err := New(srv.URL, "me@example.com", "tok", "").Create(context.Background(), issueTask(), u)
+	id, err := New(Site{URL: srv.URL, Cloud: true}, "me@example.com", "tok", "").Create(context.Background(), issueTask(), u)
 	if err != nil || id != "5001" {
 		t.Fatalf("Create = %q, %v", id, err)
 	}
@@ -151,7 +151,7 @@ func TestCreateCloud(t *testing.T) {
 func TestCreateDataCenterPlainComment(t *testing.T) {
 	srv, calls := server(t, `201 {"id":"7"}`)
 	u := core.Unit{Start: time.Unix(0, 0), Duration: time.Hour, Note: "n"}
-	if _, err := New(srv.URL, "", "pat", "").Create(context.Background(), issueTask(), u); err != nil {
+	if _, err := New(Site{URL: srv.URL}, "", "pat", "").Create(context.Background(), issueTask(), u); err != nil {
 		t.Fatal(err)
 	}
 	if c := (*calls)[0]; c.path != "/rest/api/2/issue/101/worklog" || c.body["comment"] != "n" {
@@ -161,69 +161,147 @@ func TestCreateDataCenterPlainComment(t *testing.T) {
 
 func TestCreateErrors(t *testing.T) {
 	srv, _ := server(t, `400 {"errorMessages":[],"errors":{"comment":"The comment is too long."}}`)
-	_, err := New(srv.URL, "e", "t", "").Create(context.Background(), issueTask(), core.Unit{Duration: time.Hour})
+	_, err := New(Site{URL: srv.URL, Cloud: true}, "e", "t", "").Create(context.Background(), issueTask(), core.Unit{Duration: time.Hour})
 	if err == nil || !strings.Contains(err.Error(), "comment is too long") {
 		t.Errorf("error = %v; want Jira's message", err)
 	}
 	project := core.Task{Remote: &core.RemoteTask{Integration: "jira", NativeID: "project:10", NodeType: "project"}}
-	if _, err := New("http://unused", "e", "t", "").Create(context.Background(), project, core.Unit{}); err == nil {
+	if _, err := New(Site{URL: "http://unused", Cloud: true}, "e", "t", "").Create(context.Background(), project, core.Unit{}); err == nil {
 		t.Error("worklog on a project was attempted")
 	}
 }
 
-func TestVerify(t *testing.T) {
+func TestGuess(t *testing.T) {
 	for _, tc := range []struct {
-		email, resp, wantPath, want string
+		raw  string
+		want Site
 	}{
-		{"me@example.com", `200 {"accountId":"a1","displayName":"Me","emailAddress":"me@example.com"}`,
-			"/rest/api/3/myself", "Jira Cloud (REST v3) as Me <me@example.com>"},
-		{"", `200 {"name":"me","displayName":"Me"}`,
-			"/rest/api/2/myself", "Jira Data Center (REST v2, access token) as Me <me>"},
+		{"https://mycompany.atlassian.net/jira/software/projects/X/boards/1", Site{URL: "https://mycompany.atlassian.net", Cloud: true}},
+		{"https://mycompany.atlassian.net/", Site{URL: "https://mycompany.atlassian.net", Cloud: true}},
+		{"https://jira.example.com/browse/PROJ-1", Site{URL: "https://jira.example.com"}},
+		{"https://example.com/jira/secure/Dashboard.jspa", Site{URL: "https://example.com/jira"}},
+		{"https://example.com/jira/", Site{URL: "https://example.com/jira"}},
 	} {
-		srv, calls := server(t, tc.resp)
-		got, err := New(srv.URL, tc.email, "tok", "").Verify(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != tc.want {
-			t.Errorf("Verify = %q; want %q", got, tc.want)
-		}
-		if c := (*calls)[0]; c.method != "GET" || c.path != tc.wantPath {
-			t.Errorf("request = %s %s; want GET %s", c.method, c.path, tc.wantPath)
+		if got := Guess(tc.raw); got != tc.want {
+			t.Errorf("Guess(%q) = %+v; want %+v", tc.raw, got, tc.want)
 		}
 	}
 }
 
+func TestProbe(t *testing.T) {
+	cloud := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_edge/tenant_info" {
+			t.Errorf("probe requested %s", r.URL.Path)
+		}
+		io.WriteString(w, `{"cloudId":"abc-123"}`)
+	}))
+	defer cloud.Close()
+	got, err := Probe(context.Background(), cloud.URL+"/jira/your-work")
+	if err != nil || got != (Site{URL: cloud.URL, Cloud: true, CloudID: "abc-123"}) {
+		t.Errorf("Probe(cloud) = %+v, %v", got, err)
+	}
+
+	dc := httptest.NewServer(http.NotFoundHandler())
+	defer dc.Close()
+	got, err = Probe(context.Background(), dc.URL+"/jira/browse/X-1")
+	if err != nil || got != (Site{URL: dc.URL + "/jira"}) {
+		t.Errorf("Probe(data center) = %+v, %v", got, err)
+	}
+
+	dc.Close()
+	if _, err := Probe(context.Background(), dc.URL); err == nil {
+		t.Error("Probe of an unreachable site returned no error")
+	}
+}
+
+// routes serves canned responses by method and path, and records each call.
+func routes(t *testing.T, r map[string]string) (*httptest.Server, *[]call) {
+	t.Helper()
+	var calls []call
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		calls = append(calls, call{method: req.Method, path: req.URL.Path, auth: req.Header.Get("Authorization")})
+		resp, ok := r[req.Method+" "+req.URL.Path]
+		if !ok {
+			t.Errorf("unexpected request %s %s", req.Method, req.URL.Path)
+			w.WriteHeader(500)
+			return
+		}
+		status, body, _ := strings.Cut(resp, " ")
+		w.WriteHeader(map[string]int{"200": 200, "401": 401}[status])
+		io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+func withGateway(t *testing.T, url string) {
+	old := gateway
+	gateway = url
+	t.Cleanup(func() { gateway = old })
+}
+
+const me = `200 {"displayName":"Me","emailAddress":"me@example.com"}`
+const unauth = `401 {"errorMessages":["Client must be authenticated to access this resource."]}`
+
+func TestVerify(t *testing.T) {
+	srv, calls := routes(t, map[string]string{
+		"GET /ex/jira/abc/rest/api/3/myself": me,
+		"GET /rest/api/2/myself":             `200 {"name":"me","displayName":"Me"}`,
+	})
+	withGateway(t, srv.URL)
+
+	// A scoped Cloud token goes through the gateway.
+	a := New(Site{URL: "https://unused.example", Cloud: true, CloudID: "abc"}, "me@example.com", "tok", "")
+	if got, err := a.Verify(context.Background()); err != nil || got != "Jira Cloud as Me <me@example.com>" {
+		t.Errorf("Verify(scoped) = %q, %v", got, err)
+	}
+	if c := (*calls)[0]; !strings.HasPrefix(c.auth, "Basic ") {
+		t.Errorf("gateway auth = %q; want basic", c.auth)
+	}
+
+	// Data Center takes the token as a bearer token at the site.
+	got, err := New(Site{URL: srv.URL}, "", "pat", "").Verify(context.Background())
+	if err != nil || got != "Jira Data Center as Me <me>" {
+		t.Errorf("Verify(data center) = %q, %v", got, err)
+	}
+	if c := (*calls)[1]; c.auth != "Bearer pat" {
+		t.Errorf("data center auth = %q; want the bearer token", c.auth)
+	}
+}
+
+// A classic token is refused by the gateway and accepted at the site. The
+// adapter stays at the site, and says the token is unscoped.
+func TestVerifyClassicToken(t *testing.T) {
+	gw, _ := routes(t, map[string]string{"GET /ex/jira/abc/rest/api/3/myself": unauth})
+	site, _ := routes(t, map[string]string{
+		"GET /rest/api/3/myself":             me,
+		"POST /rest/api/3/issue/101/worklog": `200 {"id":"9"}`,
+	})
+	withGateway(t, gw.URL)
+	a := New(Site{URL: site.URL, Cloud: true, CloudID: "abc"}, "me@example.com", "tok", "")
+	got, err := a.Verify(context.Background())
+	if err != nil || !strings.Contains(got, "Jira Cloud as Me <me@example.com> · ⚠ unscoped token") {
+		t.Errorf("Verify = %q, %v; want the unscoped token called out", got, err)
+	}
+	if _, err := a.Create(context.Background(), issueTask(), core.Unit{Start: time.Now(), Duration: time.Hour}); err != nil {
+		t.Errorf("Create after falling back to the site: %v", err)
+	}
+}
+
+// A rejection names what was sent and which scopes are needed.
 func TestVerifyRejected(t *testing.T) {
-	srv, _ := server(t, `400 {"errorMessages":["Client must be authenticated"]}`)
-	_, err := New(srv.URL, "me@example.com", "bad", "").Verify(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "Client must be authenticated") {
-		t.Errorf("err = %v; want the remote's message", err)
-	}
-}
-
-// A rejection names what was sent, and a Cloud site without an email is
-// called out: that is Data Center mode, which Cloud refuses.
-func TestVerifyRejectionNamesCredential(t *testing.T) {
-	srv, _ := server(t, `400 {"errorMessages":["Client must be authenticated"]}`)
-	_, err := New(srv.URL, "", "a-long-api-token-ending-wxyz", "").Verify(context.Background())
-	want := "Jira Data Center (REST v2), bearer access token (28 chars, ending …wxyz): HTTP 400: Client must be authenticated"
-	if err == nil || err.Error() != want {
-		t.Errorf("err = %v; want %s", err, want)
-	}
-	got := New("https://example.atlassian.net", "", "tok", "").credential()
-	if !strings.Contains(got, "no account email is set, and Jira Cloud needs one") {
-		t.Errorf("credential() = %q; want the missing email called out", got)
-	}
-}
-
-// A Cloud 401 points at the usual causes and where to make a token.
-func TestVerifyUnauthorizedHint(t *testing.T) {
-	srv, _ := server(t, `401 {"errorMessages":["Client must be authenticated to access this resource."]}`)
-	_, err := New(srv.URL, "me@exmaple.com", "tok", "").Verify(context.Background())
-	for _, want := range []string{"as me@exmaple.com", "HTTP 401", "Create API token", TokenURL} {
+	srv, _ := routes(t, map[string]string{"GET /ex/jira/abc/rest/api/3/myself": unauth, "GET /rest/api/3/myself": unauth, "GET /rest/api/2/myself": unauth})
+	withGateway(t, srv.URL)
+	_, err := New(Site{URL: srv.URL, Cloud: true, CloudID: "abc"}, "me@exmaple.com", "a-long-api-token-ending-wxyz", "").
+		Verify(context.Background())
+	for _, want := range []string{"Jira Cloud, me@exmaple.com with API token (28 chars, ending …wxyz)", "HTTP 401", Scopes} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %v; want it to contain %q", err, want)
 		}
+	}
+
+	_, err = New(Site{URL: srv.URL}, "", "pat", "").Verify(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Jira Data Center at "+srv.URL+", personal access token (3 chars)") {
+		t.Errorf("err = %v; want the data center credential named", err)
 	}
 }

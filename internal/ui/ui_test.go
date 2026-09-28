@@ -159,7 +159,7 @@ func TestUploadEndToEnd(t *testing.T) {
 	defer srv.Close()
 	d := &driver{t: t, m: New(st, nil, nil, loc)}
 	d.send(load(st)())
-	d.send(connectedMsg{ad: jira.New(srv.URL, "me@example.com", "tok", "")})
+	d.send(connectedMsg{ad: jira.New(jira.Site{URL: srv.URL, Cloud: true}, "me@example.com", "tok", "")})
 
 	d.keys("u", "enter")
 	if got := d.model().upload.stage; got != stageConfirm {

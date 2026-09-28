@@ -13,7 +13,9 @@ import (
 //
 //	YATTA_JIRA_URL    e.g. https://gsprdev.atlassian.net
 //	YATTA_JIRA_EMAIL  the account email
-//	YATTA_JIRA_TOKEN  an API token for that account
+//	YATTA_JIRA_TOKEN  an API token for that account: scoped (read:jira-user,
+//	                  read:jira-work, write:jira-work) to test the gateway, or
+//	                  classic to test the fallback to the site
 //
 // It expects issues labelled yatta-test: an epic with a story, and a subtask
 // under that story. It adds a 15-minute worklog to that story, which yatta
@@ -25,7 +27,17 @@ func TestLive(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	a := New(url, email, token, "labels = yatta-test ORDER BY key")
+	site, err := Probe(ctx, url)
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	t.Logf("site: %+v", site)
+	a := New(site, email, token, "labels = yatta-test ORDER BY key")
+	who, err := a.Verify(ctx)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	t.Log(who)
 
 	tasks, err := a.FetchTasks(ctx)
 	if err != nil {
