@@ -66,6 +66,7 @@ Everything else is reached by keystroke from this resting view.
 - Duration is always derived: `duration = end − start`. There is no separate duration field.
 - Each entry **should** have an associated task. A task is required only for upload: an entry, or a running timer, may be recorded without one and is flagged as unassigned until the user picks a task.
 - Each entry **may** have a free-text note.
+- A running timer can be edited without stopping it: its start can be moved earlier, and its task and note can be set or changed. Timers are routinely started before the user knows what they are for, or a few minutes late.
 - The UI works exclusively with **local records**. All editing, display, and interaction is against the local copy.
 - Entries can be freely edited until they have been uploaded. Once uploaded, an entry is locked: it remains visible for review and recall, but it cannot be changed.
 - An entry that has not been uploaded can be discarded. An uploaded entry is never deleted individually.

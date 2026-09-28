@@ -239,3 +239,74 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+func TestEditRunningTimer(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "yatta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	started := time.Date(2026, 3, 2, 9, 0, 30, 0, time.UTC)
+	now := started.Add(10 * time.Minute)
+	m := New(st, nil, nil, time.UTC)
+	m.now = func() time.Time { return now }
+	d := &driver{t: t, m: m}
+	must(t, func() error { _, err := st.StartTimer("", started); return err }())
+	d.send(tea.WindowSizeMsg{Width: 120, Height: 30})
+	d.send(load(st)())
+
+	key := func(t tea.KeyType) { d.send(tea.KeyMsg{Type: t}) }
+	timer := func() core.ActiveTimer {
+		got, err := st.Timer()
+		must(t, err)
+		return *got
+	}
+
+	// A note alone leaves the start exactly as it was, seconds included.
+	d.keys("E")
+	if d.model().mode != modeEditor || !d.model().editor.timer {
+		t.Fatalf("E did not open the timer editor: mode %v", d.model().mode)
+	}
+	key(tea.KeyTab) // start -> end is hidden -> note
+	d.keys("standup")
+	key(tea.KeyCtrlS)
+	if got := timer(); !got.Start.Equal(started) || got.Note != "standup" {
+		t.Fatalf("after note-only edit timer = %+v; want start %v and note", got, started)
+	}
+	if !strings.Contains(d.model().statusBar(), "standup") {
+		t.Error("status bar does not show the timer's note")
+	}
+
+	// A start in the future is refused and the editor stays open.
+	d.keys("E")
+	key(tea.KeyCtrlU)
+	d.keys("23:00")
+	key(tea.KeyCtrlS)
+	if d.model().mode != modeEditor || d.model().editor.err == "" {
+		t.Fatal("a future start was accepted")
+	}
+	if got := timer(); !got.Start.Equal(started) {
+		t.Fatalf("start moved to %v despite the error", got.Start)
+	}
+
+	// Backdating takes effect, and the entry keeps the note when stopped.
+	key(tea.KeyCtrlU)
+	d.keys("08:55")
+	key(tea.KeyCtrlS)
+	want := time.Date(2026, 3, 2, 8, 55, 0, 0, time.UTC)
+	if got := timer(); !got.Start.Equal(want) || got.Note != "standup" {
+		t.Fatalf("after backdating timer = %+v; want start %v", got, want)
+	}
+	d.keys("x")
+	entries, err := st.Entries(time.Time{}, time.Time{})
+	must(t, err)
+	if len(entries) != 1 || !entries[0].Start.Equal(want) || entries[0].Duration != 15*time.Minute+30*time.Second || entries[0].Note != "standup" {
+		t.Fatalf("entries = %+v", entries)
+	}
+
+	// With no timer there is nothing to edit.
+	d.keys("E")
+	if d.model().mode != modeEntries {
+		t.Error("E opened an editor with no timer running")
+	}
+}

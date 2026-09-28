@@ -22,6 +22,7 @@ const entryKeys = `Timer
   space / s   resume: start a timer on the selected entry's task
   n           start a new timer (choose a task, or none)
   T           set the running timer's task
+  E           edit the running timer: backdate its start, add a note, set the task
   x           stop the timer
 
 Entries
@@ -204,6 +205,11 @@ func (m Model) updateEntries(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.picker.open(pickTimerTask, m.data, "")
 		m.mode = modePicker
 		return m, nil
+	case "E":
+		if m.data.timer == nil {
+			return m, flash("no timer running", true)
+		}
+		return m.openTimerEditor(*m.data.timer)
 	case "a":
 		return m.openEditor(core.TimeEntry{Start: now.Truncate(time.Minute).Add(-time.Hour), Duration: time.Hour})
 	case "e", "enter":

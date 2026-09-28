@@ -264,6 +264,9 @@ func (m Model) statusBar() string {
 			task = taskTitle(m.data.taskByID[t.TaskID])
 		}
 		timer = fmt.Sprintf("● %s  %s", clock(now.Sub(t.Start)), task)
+		if t.Note != "" {
+			timer += "  — " + truncate(t.Note, 30)
+		}
 	}
 	today := core.DayTotal(m.data.entries, m.data.timer, now, m.loc)
 	c := m.data.counts
@@ -288,6 +291,14 @@ func (m Model) statusBar() string {
 		gap = 1
 	}
 	return statusStyle.Width(max(m.width, 1)).Render(" " + timer + strings.Repeat(" ", gap) + right + " ")
+}
+
+// truncate shortens s to at most n runes, marking the cut.
+func truncate(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return s
 }
 
 // clock formats a running duration as h:mm:ss.

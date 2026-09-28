@@ -157,8 +157,9 @@ Single-row table holding the running timer, so it survives a restart and an acci
 | `id` | INTEGER PK | always `1`; `CHECK (id = 1)` |
 | `start` | INTEGER NOT NULL | Unix seconds, UTC |
 | `task_id` | TEXT | nullable; `REFERENCES tasks(id)`. A timer may run before its task is chosen |
+| `note` | TEXT | nullable. Added in migration 2; a timer, like an entry, may be given its note late |
 
-On stop, the row is consumed: a `time_entries` row is created with `duration_s = now - start`, and the timer row is deleted.
+`start`, `task_id`, and `note` may all be changed while the timer runs. On stop, the row is consumed: a `time_entries` row is created with `duration_s = now - start` and the timer's `task_id` and `note`, and the timer row is deleted.
 
 ---
 

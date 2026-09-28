@@ -73,8 +73,8 @@ func TestOpenMigratesOnceAndReopens(t *testing.T) {
 			t.Fatalf("open %d: %v", i, err)
 		}
 		var v int
-		if err := s.db.QueryRow("PRAGMA user_version").Scan(&v); err != nil || v != 1 {
-			t.Fatalf("user_version = %d, %v; want 1", v, err)
+		if err := s.db.QueryRow("PRAGMA user_version").Scan(&v); err != nil || v != 2 {
+			t.Fatalf("user_version = %d, %v; want 2", v, err)
 		}
 		var fk int
 		if err := s.db.QueryRow("PRAGMA foreign_keys").Scan(&fk); err != nil || fk != 1 {
@@ -364,6 +364,36 @@ func TestTimer(t *testing.T) {
 	must[*core.TimeEntry](t)(s.StartTimer("", t0))
 	if must[*core.TimeEntry](t)(s.StopTimer(t0)) != nil {
 		t.Error("zero-length timer produced an entry")
+	}
+}
+
+func TestSaveTimer(t *testing.T) {
+	s := open(t)
+	task := remoteTask(t, s, "PROJ-1")
+	if err := s.SaveTimer(core.ActiveTimer{Start: t0}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SaveTimer with no timer = %v; want ErrNotFound", err)
+	}
+	must[*core.TimeEntry](t)(s.StartTimer("", t0.Add(10*time.Minute)))
+	// Backdate the start, add a note, and choose the task in one save.
+	want := core.ActiveTimer{Start: t0, TaskID: task.ID, Note: "standup"}
+	if err := s.SaveTimer(want); err != nil {
+		t.Fatal(err)
+	}
+	if got := must[*core.ActiveTimer](t)(s.Timer()); got == nil || *got != want {
+		t.Fatalf("timer = %+v; want %+v", got, want)
+	}
+	// The note and the backdated start carry over to the entry on stop.
+	e := must[*core.TimeEntry](t)(s.StopTimer(t0.Add(30 * time.Minute)))
+	if e == nil || !e.Start.Equal(t0) || e.Duration != 30*time.Minute || e.Note != "standup" || e.TaskID != task.ID {
+		t.Fatalf("stopped entry = %+v", e)
+	}
+	// Clearing the note and task works, and a new timer starts without either.
+	must[*core.TimeEntry](t)(s.StartTimer(task.ID, t0))
+	if err := s.SaveTimer(core.ActiveTimer{Start: t0}); err != nil {
+		t.Fatal(err)
+	}
+	if got := must[*core.ActiveTimer](t)(s.Timer()); got.TaskID != "" || got.Note != "" {
+		t.Fatalf("cleared timer = %+v", got)
 	}
 }
 

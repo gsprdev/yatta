@@ -29,6 +29,7 @@ type editorModel struct {
 	err    string
 	loc    *time.Location
 	record *core.RemoteRecord // loaded for a locked entry
+	timer  bool               // editing the running timer: no end, saved with SaveTimer
 }
 
 type recordLoadedMsg struct {
@@ -52,6 +53,30 @@ func newEditor(e core.TimeEntry, d data, loc *time.Location) editorModel {
 	return ed
 }
 
+// newTimerEditor edits the running timer. It is the entry editor without the
+// end field: the timer has no end until it stops.
+func newTimerEditor(t core.ActiveTimer, now time.Time, d data, loc *time.Location) editorModel {
+	ed := newEditor(core.TimeEntry{Start: t.Start, Duration: now.Sub(t.Start), TaskID: t.TaskID, Note: t.Note}, d, loc)
+	ed.timer = true
+	ed.setFocus(fieldStart)
+	return ed
+}
+
+// hidden reports a field the editor does not show or visit.
+func (ed editorModel) hidden(f int) bool { return ed.timer && f == fieldEnd }
+
+// move shifts focus by delta fields, wrapping, past any hidden field.
+func (ed *editorModel) move(delta int) {
+	f := ed.focus
+	for {
+		f = (f + delta + fieldCount) % fieldCount
+		if !ed.hidden(f) {
+			break
+		}
+	}
+	ed.setFocus(f)
+}
+
 func (ed *editorModel) setFocus(f int) {
 	ed.focus = (f + fieldCount) % fieldCount
 	for i := range ed.inputs {
@@ -70,17 +95,45 @@ func (ed editorModel) help() string {
 	return "tab/↑↓ move · enter on task: choose · ctrl+s save · esc cancel"
 }
 
+func (ed editorModel) value(i int) string { return strings.TrimSpace(ed.inputs[i].Value()) }
+
+// parseStart reads the date and start fields.
+func (ed editorModel) parseStart() (day, start time.Time, err error) {
+	day, err = time.ParseInLocation("2006-01-02", ed.value(fieldDate), ed.loc)
+	if err != nil {
+		return day, start, fmt.Errorf("date: use YYYY-MM-DD")
+	}
+	start, err = clockOn(day, ed.value(fieldStart), ed.loc)
+	if err != nil {
+		return day, start, fmt.Errorf("start: use HH:MM")
+	}
+	return day, start, nil
+}
+
+// parseTimer builds the edited timer from the form. A start left as it was
+// shown keeps its seconds, so saving a note does not move the start.
+func (ed editorModel) parseTimer(now time.Time) (core.ActiveTimer, error) {
+	t := core.ActiveTimer{Start: ed.entry.Start, TaskID: ed.taskID, Note: ed.value(fieldNote)}
+	_, start, err := ed.parseStart()
+	if err != nil {
+		return t, err
+	}
+	if !start.Equal(ed.entry.Start.In(ed.loc).Truncate(time.Minute)) {
+		t.Start = start.UTC()
+	}
+	if t.Start.After(now) {
+		return t, fmt.Errorf("start: the timer cannot start in the future")
+	}
+	return t, nil
+}
+
 // parse builds the edited entry from the form.
 func (ed editorModel) parse() (core.TimeEntry, error) {
 	e := ed.entry
-	v := func(i int) string { return strings.TrimSpace(ed.inputs[i].Value()) }
-	day, err := time.ParseInLocation("2006-01-02", v(fieldDate), ed.loc)
+	v := ed.value
+	day, start, err := ed.parseStart()
 	if err != nil {
-		return e, fmt.Errorf("date: use YYYY-MM-DD")
-	}
-	start, err := clockOn(day, v(fieldStart), ed.loc)
-	if err != nil {
-		return e, fmt.Errorf("start: use HH:MM")
+		return e, err
 	}
 	var end time.Time
 	if d, err := time.ParseDuration(v(fieldEnd)); err == nil {
@@ -106,6 +159,12 @@ func clockOn(day time.Time, hhmm string, loc *time.Location) (time.Time, error) 
 		return time.Time{}, err
 	}
 	return time.Date(day.Year(), day.Month(), day.Day(), c.Hour(), c.Minute(), 0, 0, loc), nil
+}
+
+func (m Model) openTimerEditor(t core.ActiveTimer) (tea.Model, tea.Cmd) {
+	m.editor = newTimerEditor(t, m.now(), m.data, m.loc)
+	m.mode = modeEditor
+	return m, nil
 }
 
 func (m Model) openEditor(e core.TimeEntry) (tea.Model, tea.Cmd) {
@@ -142,10 +201,10 @@ func (m Model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "tab", "down":
-			ed.setFocus(ed.focus + 1)
+			ed.move(1)
 			return m, nil
 		case "shift+tab", "up":
-			ed.setFocus(ed.focus - 1)
+			ed.move(-1)
 			return m, nil
 		case "ctrl+t":
 			m.picker.open(pickEditor, m.data, "")
@@ -157,9 +216,18 @@ func (m Model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = modePicker
 				return m, nil
 			}
-			ed.setFocus(ed.focus + 1)
+			ed.move(1)
 			return m, nil
 		case "ctrl+s":
+			if ed.timer {
+				t, err := ed.parseTimer(m.now())
+				if err != nil {
+					ed.err = err.Error()
+					return m, nil
+				}
+				m.mode = modeEntries
+				return m, m.mutate("timer updated", func(st *store.Store) error { return st.SaveTimer(t) })
+			}
 			e, err := ed.parse()
 			if err != nil {
 				ed.err = err.Error()
@@ -184,6 +252,8 @@ func (ed editorModel) view(d data) string {
 	var b strings.Builder
 	title := "Edit entry"
 	switch {
+	case ed.timer:
+		title = "Edit running timer"
 	case ed.entry.ID == "":
 		title = "New entry"
 	case ed.entry.Locked():
@@ -192,6 +262,9 @@ func (ed editorModel) view(d data) string {
 	b.WriteString(boldStyle.Render(title) + "\n\n")
 	labels := [fieldCount]string{"Date", "Start", "End", "Note", "Task"}
 	for i := 0; i < fieldCount; i++ {
+		if ed.hidden(i) {
+			continue
+		}
 		marker := "  "
 		if i == ed.focus && !ed.entry.Locked() {
 			marker = "› "

@@ -196,10 +196,11 @@ A record is written once and never modified — YATTA does not update or delete 
 type ActiveTimer struct {
     Start  time.Time
     TaskID string
+    Note   string
 }
 ```
 
-Persisted, so that a running timer survives a restart and an accidental terminal close does not lose an in-flight block.
+Persisted, so that a running timer survives a restart and an accidental terminal close does not lose an in-flight block. All three fields are editable while the timer runs: start is backdated, and the task and note are supplied late, because recording first and classifying later is the expected way of working. On stop, the timer's start, task, and note become the entry's.
 
 ---
 
@@ -325,6 +326,7 @@ func (s *Store) ReconcileRemoteTasks(integration string, fetched []core.FetchedT
 // StartTimer stops any running timer at now (returning its entry) and starts a new one.
 func (s *Store) StartTimer(taskID string, now time.Time) (*core.TimeEntry, error)
 func (s *Store) SetTimerTask(taskID string) error
+func (s *Store) SaveTimer(t core.ActiveTimer) error // replace start, task, and note of the running timer
 func (s *Store) StopTimer(now time.Time) (*core.TimeEntry, error)
 func (s *Store) Timer() (*core.ActiveTimer, error)
 
@@ -396,7 +398,7 @@ type mode int
 const (
     modeEntries mode = iota // resting view
     modePicker              // choosing a task
-    modeEditor              // creating or correcting an entry; read-only when locked
+    modeEditor              // creating or correcting an entry, or the running timer; read-only when locked
     modeUpload              // confirm scope, then blocking progress
     modeAttention           // failed uploads, departed tasks, unassigned entries
     modeTasks               // local task management
@@ -431,7 +433,7 @@ The resting view is `modeEntries` with a status bar rendered by the root model o
 | Entry list, search, filter, resume-from-recent | `bubbles/list` — its built-in filtering is the search requirement, and the list is ordered most-recent-first so resume is a filter plus Enter |
 | Merged local/remote view | Opening a locked entry shows it read-only with its record: the uploaded duration and note against the local time, and under aggregation every member entry. An excluded entry is marked as such. The entry list marks each entry's state |
 | Task tree picker | `bubbles/list` over a depth-flattened tree with indent prefixes, showing each remote task's label and filtering on the full ancestry path plus label, so typing `PROJ-123` finds the ticket; non-`Selectable()` tasks omitted |
-| Entry create / correct | `bubbles/textinput` for times and note, plus the picker for the task — reassociation is this same flow, not a separate one. A locked entry opens read-only |
+| Entry create / correct | `bubbles/textinput` for times and note, plus the picker for the task — reassociation is this same flow, not a separate one. A locked entry opens read-only. The running timer opens in the same editor without the end field, saving start, task, and note back to the timer; a start in the future is refused |
 | Local task management | `modeTasks`: the same flattened list over local tasks only, with keys to add a child or sibling, rename, move (re-parent through the picker), and archive |
 | Settings | `modeSettings`: `huh` forms for the rounding and aggregation policy and for integration setup — type, base URL, credential (written to the keyring, never the database) — plus purge: choose a date, see the warning counts, confirm |
 | Remote task fetch | a background command on startup when an integration is configured, after integration setup, and on a keystroke from the resting view; never blocks the interface, and the result is reconciled into the store |
@@ -522,6 +524,8 @@ The database is `yatta.db` in the platform's per-user data directory: `$XDG_DATA
 - **Pure-Go SQLite (`modernc.org/sqlite`)** to keep `CGO_ENABLED=0` and single-binary cross-compilation.
 - **No overlap validation in `core`.** `Group` does not validate spans and `PlanUpload` has no abort path. A remote that genuinely cares enforces it inside its own adapter, where a rejection is an ordinary per-op failure.
 - **Credentials in the OS keyring, never in SQLite.**
+
+- **The running timer is edited in the entry editor.** Backdating a start and adding a note or task are the same act as correcting an entry, so the timer reuses that form minus the end field rather than growing a second one. Saving with the start left as displayed keeps its original seconds, so adding a note never moves the start. Overlap with existing entries is not checked, consistent with the rule above.
 
 ## Open Questions
 
