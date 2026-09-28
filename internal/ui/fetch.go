@@ -10,10 +10,14 @@ import (
 	"github.com/gsprdev/yatta/internal/remote"
 )
 
-const fetchTimeout = 2 * time.Minute
+const (
+	fetchTimeout  = 2 * time.Minute
+	verifyTimeout = 30 * time.Second
+)
 
 type connectedMsg struct {
 	ad    remote.Adapter
+	who   string // the verified account and API, from Adapter.Verify
 	err   error
 	fetch bool // fetch remote tasks once connected
 }
@@ -23,7 +27,8 @@ type fetchedMsg struct {
 	err error
 }
 
-// connectCmd builds the adapter for the configured integration.
+// connectCmd builds the adapter for the configured integration and verifies
+// its credentials, so a wrong account or mode shows before any fetch.
 func (m Model) connectCmd(fetch bool) tea.Cmd {
 	st, connect := m.st, m.connect
 	return func() tea.Msg {
@@ -32,15 +37,28 @@ func (m Model) connectCmd(fetch bool) tea.Cmd {
 			return connectedMsg{err: err}
 		}
 		ad, err := connect(cfg)
-		return connectedMsg{ad: ad, err: err, fetch: fetch}
+		if err != nil || ad == nil {
+			return connectedMsg{err: err}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), verifyTimeout)
+		defer cancel()
+		who, err := ad.Verify(ctx)
+		if err != nil {
+			// Keep the adapter: the remote may only be briefly unreachable.
+			return connectedMsg{ad: ad, err: fmt.Errorf("could not verify the credentials: %w", err)}
+		}
+		return connectedMsg{ad: ad, who: who, fetch: fetch}
 	}
 }
 
 func (m Model) onConnected(msg connectedMsg) (tea.Model, tea.Cmd) {
-	m.ad = msg.ad
+	m.ad, m.who, m.connErr = msg.ad, msg.who, msg.err
 	if msg.err != nil {
 		m.flash, m.isErr = "remote integration: "+msg.err.Error(), true
 		return m, nil
+	}
+	if msg.who != "" {
+		m.flash, m.isErr = "connected: "+msg.who, false
 	}
 	if msg.fetch && m.ad != nil {
 		return m, m.startFetch()
@@ -80,10 +98,13 @@ func (m Model) onFetched(msg fetchedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	st := m.st
-	n := msg.n
+	flash := fmt.Sprintf("fetched %d remote tasks", msg.n)
+	if m.who != "" {
+		flash += " · " + m.who
+	}
 	return m, func() tea.Msg {
 		l := load(st)().(loadedMsg)
-		l.flash = fmt.Sprintf("fetched %d remote tasks", n)
+		l.flash = flash
 		return l
 	}
 }

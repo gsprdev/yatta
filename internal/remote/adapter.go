@@ -12,6 +12,9 @@ import (
 // one-way, so records are never updated or deleted.
 type Adapter interface {
 	Integration() string
+	// Verify confirms the credentials by asking the remote who they belong
+	// to, and describes the account and API in use for the user to check.
+	Verify(ctx context.Context) (string, error)
 	FetchTasks(ctx context.Context) ([]core.FetchedTask, error)
 	// Create uploads one unit against task and returns the remote system's
 	// identifier for the new record.

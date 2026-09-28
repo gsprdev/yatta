@@ -6,6 +6,7 @@
 package jira
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,6 +44,31 @@ func New(baseURL, email, token, query string) *Adapter {
 }
 
 func (a *Adapter) Integration() string { return "jira" }
+
+// Verify names the account and which of Cloud or Data Center is assumed: an
+// account email selects Cloud, so a missing one shows here, not as an empty
+// fetch.
+func (a *Adapter) Verify(ctx context.Context) (string, error) {
+	var me struct {
+		Name         string `json:"name"`
+		DisplayName  string `json:"displayName"`
+		EmailAddress string `json:"emailAddress"`
+	}
+	if err := a.c.Do(ctx, http.MethodGet, a.api()+"/myself", nil, &me); err != nil {
+		return "", err
+	}
+	who := me.DisplayName
+	if id := cmp.Or(me.EmailAddress, me.Name); id != "" {
+		who = strings.TrimSpace(who + " <" + id + ">")
+	}
+	if who == "" {
+		return "", fmt.Errorf("Jira did not identify the account")
+	}
+	if a.cloud {
+		return "Jira Cloud (REST v3) as " + who, nil
+	}
+	return "Jira Data Center (REST v2, access token) as " + who, nil
+}
 
 func (a *Adapter) api() string {
 	if a.cloud {

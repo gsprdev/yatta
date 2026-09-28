@@ -355,6 +355,7 @@ An interface is warranted here: the implementation is selected at runtime from c
 ```go
 type Adapter interface {
     Integration() string
+    Verify(ctx context.Context) (string, error) // who the credentials belong to, and which API
     FetchTasks(ctx context.Context) ([]core.FetchedTask, error)
     Create(ctx context.Context, task core.Task, u core.Unit) (remoteID string, err error)
 }
@@ -362,7 +363,11 @@ type Adapter interface {
 
 Create is the only write. `task` is the unit's target task, passed so the adapter can read its native ID and `Extra` without any store access. Adapters take a `core.Unit` and neither know nor care whether its duration summarizes one entry or five — aggregation is invisible below the planning layer. Credentials and base URL are injected at construction; an adapter never reads configuration or the keyring itself. Each adapter unmarshals `Task.Remote.Extra` into its own unexported struct.
 
+Verify is a read of the remote's "current user" endpoint (Jira `/myself`, Redmine `/users/current.json`, Toggl `/me`). It runs whenever the adapter is built — at startup and after integration setup — and returns a line such as `Jira Cloud (REST v3) as Name <email>`, which the interface shows. A search that runs as the wrong account, or anonymously, can succeed with no results; verifying first turns that into a visible account name or a visible error.
+
 All three are plain `net/http` clients with `encoding/json`, sharing a small JSON client in `internal/remote` that turns an error response into the remote's own message, since that message is what the user sees in the attention list.
+
+For diagnosis, `yatta --debug` appends every remote request and response to `debug.log` beside the database. The trace wraps the HTTP transport (`remote.Trace`) and records method, URL, bodies, status, and timing. It writes no headers, and of `Authorization` only the scheme (`Basic`, `Bearer`), so it never holds a credential. It is off by default and only ever written locally.
 
 | Adapter | Tasks fetched | Where time is recorded |
 |---|---|---|
@@ -433,7 +438,7 @@ The resting view is `modeEntries` with a status bar rendered by the root model o
 | Task tree picker | `bubbles/list` over a depth-flattened tree with indent prefixes, showing each remote task's label and filtering on the full ancestry path plus label, so typing `PROJ-123` finds the ticket; non-`Selectable()` tasks omitted |
 | Entry create / correct | `bubbles/textinput` for times and note, plus the picker for the task — reassociation is this same flow, not a separate one. A locked entry opens read-only |
 | Local task management | `modeTasks`: the same flattened list over local tasks only, with keys to add a child or sibling, rename, move (re-parent through the picker), and archive |
-| Settings | `modeSettings`: `huh` forms for the rounding and aggregation policy and for integration setup — type, base URL, credential (written to the keyring, never the database) — plus purge: choose a date, see the warning counts, confirm |
+| Settings | `modeSettings`: `huh` forms for the rounding and aggregation policy and for integration setup — type, base URL, query, account, credential (written to the keyring, never the database) — plus purge: choose a date, see the warning counts, confirm. The integration form edits the current configuration in place: every field but the token is pre-filled, and an empty token keeps the stored one while the integration type is unchanged. The menu shows the verified account, or why verification failed |
 | Remote task fetch | a background command on startup when an integration is configured, after integration setup, and on a keystroke from the resting view; never blocks the interface, and the result is reconciled into the store |
 | Upload confirmation and progress | custom; a summary of the units to upload and the below-minimum exclusions, then per-unit results streaming in while all other input is blocked |
 | Failed uploads, departed tasks, unassigned entries | `bubbles/list` in `modeAttention`, filtered by kind; selecting an item returns to `modeEntries` positioned on the affected entry |
@@ -522,6 +527,8 @@ The database is `yatta.db` in the platform's per-user data directory: `$XDG_DATA
 - **Pure-Go SQLite (`modernc.org/sqlite`)** to keep `CGO_ENABLED=0` and single-binary cross-compilation.
 - **No overlap validation in `core`.** `Group` does not validate spans and `PlanUpload` has no abort path. A remote that genuinely cares enforces it inside its own adapter, where a rejection is an ordinary per-op failure.
 - **Credentials in the OS keyring, never in SQLite.**
+- **Integration setup edits in place and verifies on connect.** Re-entering the whole configuration to change a query invited mistakes: an email left empty silently switched Jira from Cloud to Data Center, which showed up only as a fetch with no results. The form pre-fills the stored values, keeps the stored token when the field is left empty, and each connection is checked with `Adapter.Verify` so the account and API in use are visible.
+- **Debug tracing is an opt-in flag, not a setting.** It is used rarely and while diagnosing, and a flag keeps it out of the database. The trace records bodies but never a credential.
 
 ## Open Questions
 

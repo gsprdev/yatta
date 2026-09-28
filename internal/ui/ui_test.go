@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -37,6 +38,15 @@ func (d *driver) send(msg tea.Msg) {
 		if batch, ok := msg.(tea.BatchMsg); ok {
 			for _, c := range batch {
 				queue = append(queue, run(c)...)
+			}
+			continue
+		}
+		// tea.Sequence's message type is unexported; it is a []tea.Cmd.
+		if v := reflect.ValueOf(msg); v.Kind() == reflect.Slice && v.Type().Elem() == reflect.TypeOf(tea.Cmd(nil)) {
+			for i := 0; i < v.Len(); i++ {
+				if c, _ := v.Index(i).Interface().(tea.Cmd); c != nil {
+					d.send(c())
+				}
 			}
 			continue
 		}

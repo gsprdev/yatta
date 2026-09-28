@@ -168,3 +168,34 @@ func TestCreateErrors(t *testing.T) {
 		t.Error("worklog on a project was attempted")
 	}
 }
+
+func TestVerify(t *testing.T) {
+	for _, tc := range []struct {
+		email, resp, wantPath, want string
+	}{
+		{"me@example.com", `200 {"accountId":"a1","displayName":"Me","emailAddress":"me@example.com"}`,
+			"/rest/api/3/myself", "Jira Cloud (REST v3) as Me <me@example.com>"},
+		{"", `200 {"name":"me","displayName":"Me"}`,
+			"/rest/api/2/myself", "Jira Data Center (REST v2, access token) as Me <me>"},
+	} {
+		srv, calls := server(t, tc.resp)
+		got, err := New(srv.URL, tc.email, "tok", "").Verify(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != tc.want {
+			t.Errorf("Verify = %q; want %q", got, tc.want)
+		}
+		if c := (*calls)[0]; c.method != "GET" || c.path != tc.wantPath {
+			t.Errorf("request = %s %s; want GET %s", c.method, c.path, tc.wantPath)
+		}
+	}
+}
+
+func TestVerifyRejected(t *testing.T) {
+	srv, _ := server(t, `400 {"errorMessages":["Client must be authenticated"]}`)
+	_, err := New(srv.URL, "me@example.com", "bad", "").Verify(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Client must be authenticated") {
+		t.Errorf("err = %v; want the remote's message", err)
+	}
+}

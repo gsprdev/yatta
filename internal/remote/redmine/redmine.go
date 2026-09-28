@@ -45,6 +45,25 @@ func New(baseURL, apiKey, query string, loc *time.Location) (*Adapter, error) {
 
 func (a *Adapter) Integration() string { return "redmine" }
 
+// Verify names the account the API key belongs to.
+func (a *Adapter) Verify(ctx context.Context) (string, error) {
+	var resp struct {
+		User struct {
+			Login     string `json:"login"`
+			Firstname string `json:"firstname"`
+			Lastname  string `json:"lastname"`
+		} `json:"user"`
+	}
+	if err := a.c.Do(ctx, http.MethodGet, "/users/current.json", nil, &resp); err != nil {
+		return "", err
+	}
+	u := resp.User
+	if u.Login == "" {
+		return "", fmt.Errorf("Redmine did not identify the account")
+	}
+	return strings.TrimSpace("Redmine as "+u.Firstname+" "+u.Lastname) + " (" + u.Login + ")", nil
+}
+
 type ref struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`

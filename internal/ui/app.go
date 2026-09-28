@@ -38,6 +38,8 @@ type Model struct {
 
 	st      *store.Store
 	ad      remote.Adapter
+	who     string // the verified account and API of ad
+	connErr error  // why ad could not be built or verified
 	connect Connector
 	secrets Secrets
 	loc     *time.Location
@@ -239,7 +241,7 @@ func (m Model) View() string {
 	case modeTasks:
 		body, help = m.tasks.view(), m.tasks.help()
 	case modeSettings:
-		body, help = m.settings.view(), m.settings.help()
+		body, help = m.settings.view(m.connection()), m.settings.help()
 	default:
 		body, help = m.entries.view(), m.entries.help()
 	}

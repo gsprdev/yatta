@@ -35,6 +35,21 @@ func New(baseURL, apiToken string) *Adapter {
 
 func (a *Adapter) Integration() string { return "toggl" }
 
+// Verify names the account the API token belongs to.
+func (a *Adapter) Verify(ctx context.Context) (string, error) {
+	var me struct {
+		Fullname string `json:"fullname"`
+		Email    string `json:"email"`
+	}
+	if err := a.c.Do(ctx, http.MethodGet, "/api/v9/me", nil, &me); err != nil {
+		return "", err
+	}
+	if me.Email == "" {
+		return "", fmt.Errorf("Toggl did not identify the account")
+	}
+	return strings.TrimSpace("Toggl as "+me.Fullname) + " <" + me.Email + ">", nil
+}
+
 type named struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`

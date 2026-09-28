@@ -144,3 +144,17 @@ func TestCreateError(t *testing.T) {
 		t.Errorf("error = %v; want Redmine's message", err)
 	}
 }
+
+func TestVerify(t *testing.T) {
+	srv, _ := server(t, map[string]string{
+		"GET /users/current.json": `200 {"user":{"id":5,"login":"jdoe","firstname":"Jane","lastname":"Doe"}}`,
+	})
+	a, err := New(srv.URL, "key", "", time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.Verify(context.Background())
+	if err != nil || got != "Redmine as Jane Doe (jdoe)" {
+		t.Errorf("Verify = %q, %v", got, err)
+	}
+}

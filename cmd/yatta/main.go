@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,14 +24,15 @@ import (
 
 func main() {
 	dbPath := flag.String("db", "", "database file (default: yatta.db in the user data directory)")
+	debug := flag.Bool("debug", false, "append every request to the remote system, and its response, to debug.log beside the database (credentials are left out)")
 	flag.Parse()
-	if err := run(*dbPath); err != nil {
+	if err := run(*dbPath, *debug); err != nil {
 		fmt.Fprintln(os.Stderr, "yatta:", err)
 		os.Exit(1)
 	}
 }
 
-func run(dbPath string) error {
+func run(dbPath string, debug bool) error {
 	if dbPath == "" {
 		dir, err := dataDir()
 		if err != nil {
@@ -40,6 +42,17 @@ func run(dbPath string) error {
 	}
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return err
+	}
+	if debug {
+		path := filepath.Join(filepath.Dir(dbPath), "debug.log")
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		// The adapters use the default client.
+		http.DefaultClient.Transport = remote.Trace(f, http.DefaultTransport)
+		defer fmt.Fprintln(os.Stderr, "yatta: remote requests were logged to", path)
 	}
 	st, err := store.Open(dbPath)
 	if err != nil {

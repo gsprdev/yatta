@@ -229,7 +229,7 @@ func (m Model) updateEntries(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeTasks
 		return m, nil
 	case ",":
-		m.settings = newSettings(m.data)
+		m.settings = newSettings(m.data, m.secrets)
 		m.mode = modeSettings
 		return m, m.settings.init()
 	case "f":
