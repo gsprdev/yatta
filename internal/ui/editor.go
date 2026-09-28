@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ const (
 	fieldEnd
 	fieldNote
 	fieldTask
+	fieldSave // a row rather than an input: enter on it saves
 	fieldCount
 )
 
@@ -63,7 +65,9 @@ func newTimerEditor(t core.ActiveTimer, now time.Time, d data, loc *time.Locatio
 }
 
 // hidden reports a field the editor does not show or visit.
-func (ed editorModel) hidden(f int) bool { return ed.timer && f == fieldEnd }
+func (ed editorModel) hidden(f int) bool {
+	return ed.timer && f == fieldEnd || ed.entry.Locked() && f == fieldSave
+}
 
 // move shifts focus by delta fields, wrapping, past any hidden field.
 func (ed *editorModel) move(delta int) {
@@ -92,7 +96,24 @@ func (ed editorModel) help() string {
 	if ed.entry.Locked() {
 		return "uploaded entries are read-only · esc back"
 	}
-	return "tab/↑↓ move · enter on task: choose · ctrl+s save · esc cancel"
+	return "tab/↑↓ move · enter on task: choose · enter on Save: save · esc cancel"
+}
+
+// fieldError is a validation failure that names the field to return focus to.
+type fieldError struct {
+	field int
+	msg   string
+}
+
+func (e fieldError) Error() string { return e.msg }
+
+// fail shows a validation error and returns focus to the field at fault.
+func (ed *editorModel) fail(err error) {
+	ed.err = err.Error()
+	var fe fieldError
+	if errors.As(err, &fe) {
+		ed.setFocus(fe.field)
+	}
 }
 
 func (ed editorModel) value(i int) string { return strings.TrimSpace(ed.inputs[i].Value()) }
@@ -101,11 +122,11 @@ func (ed editorModel) value(i int) string { return strings.TrimSpace(ed.inputs[i
 func (ed editorModel) parseStart() (day, start time.Time, err error) {
 	day, err = time.ParseInLocation("2006-01-02", ed.value(fieldDate), ed.loc)
 	if err != nil {
-		return day, start, fmt.Errorf("date: use YYYY-MM-DD")
+		return day, start, fieldError{fieldDate, "date: use YYYY-MM-DD"}
 	}
 	start, err = clockOn(day, ed.value(fieldStart), ed.loc)
 	if err != nil {
-		return day, start, fmt.Errorf("start: use HH:MM")
+		return day, start, fieldError{fieldStart, "start: use HH:MM"}
 	}
 	return day, start, nil
 }
@@ -122,7 +143,7 @@ func (ed editorModel) parseTimer(now time.Time) (core.ActiveTimer, error) {
 		t.Start = start.UTC()
 	}
 	if t.Start.After(now) {
-		return t, fmt.Errorf("start: the timer cannot start in the future")
+		return t, fieldError{fieldStart, "start: the timer cannot start in the future"}
 	}
 	return t, nil
 }
@@ -139,12 +160,12 @@ func (ed editorModel) parse() (core.TimeEntry, error) {
 	if d, err := time.ParseDuration(v(fieldEnd)); err == nil {
 		end = start.Add(d)
 	} else if end, err = clockOn(day, v(fieldEnd), ed.loc); err != nil {
-		return e, fmt.Errorf("end: use HH:MM or a length like 1h30m")
+		return e, fieldError{fieldEnd, "end: use HH:MM or a length like 1h30m"}
 	} else if !end.After(start) {
 		end = end.AddDate(0, 0, 1) // ends after midnight
 	}
 	if end.Sub(start) < time.Second {
-		return e, fmt.Errorf("the entry must be longer than zero")
+		return e, fieldError{fieldEnd, "the entry must be longer than zero"}
 	}
 	e.Start = start.UTC()
 	e.Duration = end.Sub(start).Truncate(time.Second)
@@ -206,38 +227,17 @@ func (m Model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab", "up":
 			ed.move(-1)
 			return m, nil
-		case "ctrl+t":
-			m.picker.open(pickEditor, m.data, "")
-			m.mode = modePicker
-			return m, nil
 		case "enter":
 			if ed.focus == fieldTask {
 				m.picker.open(pickEditor, m.data, "")
 				m.mode = modePicker
 				return m, nil
 			}
+			if ed.focus == fieldSave {
+				return m.saveEditor()
+			}
 			ed.move(1)
 			return m, nil
-		case "ctrl+s":
-			if ed.timer {
-				t, err := ed.parseTimer(m.now())
-				if err != nil {
-					ed.err = err.Error()
-					return m, nil
-				}
-				m.mode = modeEntries
-				return m, m.mutate("timer updated", func(st *store.Store) error { return st.SaveTimer(t) })
-			}
-			e, err := ed.parse()
-			if err != nil {
-				ed.err = err.Error()
-				return m, nil
-			}
-			m.mode = modeEntries
-			return m, m.mutate("entry saved", func(st *store.Store) error {
-				_, err := st.SaveEntry(e)
-				return err
-			})
 		}
 	}
 	if ed.focus < fieldTask && !ed.entry.Locked() {
@@ -246,6 +246,30 @@ func (m Model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// saveEditor validates the form and saves the entry, or the running timer.
+func (m Model) saveEditor() (tea.Model, tea.Cmd) {
+	ed := &m.editor
+	if ed.timer {
+		t, err := ed.parseTimer(m.now())
+		if err != nil {
+			ed.fail(err)
+			return m, nil
+		}
+		m.mode = modeEntries
+		return m, m.mutate("timer updated", func(st *store.Store) error { return st.SaveTimer(t) })
+	}
+	e, err := ed.parse()
+	if err != nil {
+		ed.fail(err)
+		return m, nil
+	}
+	m.mode = modeEntries
+	return m, m.mutate("entry saved", func(st *store.Store) error {
+		_, err := st.SaveEntry(e)
+		return err
+	})
 }
 
 func (ed editorModel) view(d data) string {
@@ -260,7 +284,7 @@ func (ed editorModel) view(d data) string {
 		title = "Uploaded entry"
 	}
 	b.WriteString(boldStyle.Render(title) + "\n\n")
-	labels := [fieldCount]string{"Date", "Start", "End", "Note", "Task"}
+	labels := [fieldCount]string{"Date", "Start", "End", "Note", "Task", "[ Save ]"}
 	for i := 0; i < fieldCount; i++ {
 		if ed.hidden(i) {
 			continue
@@ -270,6 +294,16 @@ func (ed editorModel) view(d data) string {
 			marker = "› "
 		}
 		var value string
+		if i == fieldSave {
+			b.WriteString("\n" + marker)
+			if i == ed.focus {
+				b.WriteString(boldStyle.Render(labels[i]))
+			} else {
+				b.WriteString(labels[i])
+			}
+			b.WriteString("\n")
+			continue
+		}
 		if i == fieldTask {
 			task := d.taskByID[ed.taskID]
 			value = taskTitle(task)

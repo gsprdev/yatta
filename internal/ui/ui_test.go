@@ -256,6 +256,15 @@ func TestEditRunningTimer(t *testing.T) {
 	d.send(load(st)())
 
 	key := func(t tea.KeyType) { d.send(tea.KeyMsg{Type: t}) }
+	save := func() { // tab down to the Save row and press enter
+		for i := 0; d.model().editor.focus != fieldSave; i++ {
+			if i > fieldCount {
+				t.Fatal("Save row is unreachable")
+			}
+			key(tea.KeyTab)
+		}
+		key(tea.KeyEnter)
+	}
 	timer := func() core.ActiveTimer {
 		got, err := st.Timer()
 		must(t, err)
@@ -269,7 +278,7 @@ func TestEditRunningTimer(t *testing.T) {
 	}
 	key(tea.KeyTab) // start -> end is hidden -> note
 	d.keys("standup")
-	key(tea.KeyCtrlS)
+	save()
 	if got := timer(); !got.Start.Equal(started) || got.Note != "standup" {
 		t.Fatalf("after note-only edit timer = %+v; want start %v and note", got, started)
 	}
@@ -281,7 +290,7 @@ func TestEditRunningTimer(t *testing.T) {
 	d.keys("E")
 	key(tea.KeyCtrlU)
 	d.keys("23:00")
-	key(tea.KeyCtrlS)
+	save()
 	if d.model().mode != modeEditor || d.model().editor.err == "" {
 		t.Fatal("a future start was accepted")
 	}
@@ -292,7 +301,7 @@ func TestEditRunningTimer(t *testing.T) {
 	// Backdating takes effect, and the entry keeps the note when stopped.
 	key(tea.KeyCtrlU)
 	d.keys("08:55")
-	key(tea.KeyCtrlS)
+	save()
 	want := time.Date(2026, 3, 2, 8, 55, 0, 0, time.UTC)
 	if got := timer(); !got.Start.Equal(want) || got.Note != "standup" {
 		t.Fatalf("after backdating timer = %+v; want start %v", got, want)
@@ -308,5 +317,49 @@ func TestEditRunningTimer(t *testing.T) {
 	d.keys("E")
 	if d.model().mode != modeEntries {
 		t.Error("E opened an editor with no timer running")
+	}
+}
+
+func TestEditorSaveRow(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "yatta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC)
+	m := New(st, nil, nil, time.UTC)
+	m.now = func() time.Time { return now }
+	d := &driver{t: t, m: m}
+	d.send(tea.WindowSizeMsg{Width: 120, Height: 30})
+	d.send(load(st)())
+
+	// Enter walks the fields; on the Save row it saves. No ctrl chords needed.
+	d.keys("a")
+	d.send(tea.KeyMsg{Type: tea.KeyDown}) // date -> start
+	d.send(tea.KeyMsg{Type: tea.KeyDown}) // start -> end
+	d.send(tea.KeyMsg{Type: tea.KeyDown}) // end -> note
+	d.keys("by hand")
+	d.keys("enter") // note -> task
+	d.keys("enter") // opens the picker
+	if d.model().mode != modePicker {
+		t.Fatalf("enter on the task row did not open the picker: mode %v", d.model().mode)
+	}
+	d.keys("enter")                       // (no task); back on the task row
+	d.send(tea.KeyMsg{Type: tea.KeyDown}) // task -> Save
+	if d.model().editor.focus != fieldSave {
+		t.Fatalf("focus = %d; want the Save row", d.model().editor.focus)
+	}
+	d.keys("enter")
+	entries, err := st.Entries(time.Time{}, time.Time{})
+	must(t, err)
+	if d.model().mode != modeEntries || len(entries) != 1 || entries[0].Note != "by hand" || entries[0].Duration != time.Hour {
+		t.Fatalf("mode %v, entries %+v", d.model().mode, entries)
+	}
+
+	// An uploaded entry is read-only and has no Save row to reach.
+	ed := newEditor(core.TimeEntry{Start: now, Duration: time.Hour, Upload: &core.UploadState{RecordID: "r"}}, data{}, time.UTC)
+	ed.move(-1)
+	if ed.focus == fieldSave || strings.Contains(ed.view(data{}), "Save") {
+		t.Error("a locked entry offers Save")
 	}
 }

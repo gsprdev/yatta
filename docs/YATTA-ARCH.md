@@ -526,6 +526,7 @@ The database is `yatta.db` in the platform's per-user data directory: `$XDG_DATA
 - **Credentials in the OS keyring, never in SQLite.**
 
 - **The running timer is edited in the entry editor.** Backdating a start and adding a note or task are the same act as correcting an entry, so the timer reuses that form minus the end field rather than growing a second one. Saving with the start left as displayed keeps its original seconds, so adding a note never moves the start. Overlap with existing entries is not checked, consistent with the rule above.
+- **No ctrl-chords in the interface, except `ctrl+c` to quit.** Terminals embedded in IDEs and multiplexers swallow or remap many of them, and the interface must work in the panes it is meant to be left running in. Forms are driven by tab, arrows, and enter, with a **Save** row at the end of the editor rather than a save chord; a validation error returns focus to the field at fault.
 
 ## Open Questions
 
