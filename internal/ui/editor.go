@@ -96,7 +96,7 @@ func (ed editorModel) help() string {
 	if ed.entry.Locked() {
 		return "uploaded entries are read-only · esc back"
 	}
-	return "tab/↑↓ move · enter on task: choose · enter on Save: save · esc cancel"
+	return "tab/↑↓ move · enter on task: choose · enter on Save or ctrl+s: save · esc cancel"
 }
 
 // fieldError is a validation failure that names the field to return focus to.
@@ -227,6 +227,12 @@ func (m Model) updateEditor(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab", "up":
 			ed.move(-1)
 			return m, nil
+		case "ctrl+t":
+			m.picker.open(pickEditor, m.data, "")
+			m.mode = modePicker
+			return m, nil
+		case "ctrl+s":
+			return m.saveEditor()
 		case "enter":
 			if ed.focus == fieldTask {
 				m.picker.open(pickEditor, m.data, "")

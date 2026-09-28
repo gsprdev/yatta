@@ -363,3 +363,60 @@ func TestEditorSaveRow(t *testing.T) {
 		t.Error("a locked entry offers Save")
 	}
 }
+
+func TestEditorShortcuts(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "yatta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	started := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC)
+	now := started.Add(10 * time.Minute)
+	m := New(st, nil, nil, time.UTC)
+	m.now = func() time.Time { return now }
+	d := &driver{t: t, m: m}
+	d.send(tea.WindowSizeMsg{Width: 120, Height: 30})
+	d.send(load(st)())
+	key := func(t tea.KeyType) { d.send(tea.KeyMsg{Type: t}) }
+
+	// ctrl+s saves an entry straight from a text field.
+	d.keys("a")
+	for i := 0; i < 3; i++ { // date -> start -> end -> note
+		key(tea.KeyDown)
+	}
+	d.keys("by hand")
+	key(tea.KeyCtrlS)
+	entries, err := st.Entries(time.Time{}, time.Time{})
+	must(t, err)
+	if d.model().mode != modeEntries || len(entries) != 1 || entries[0].Note != "by hand" {
+		t.Fatalf("ctrl+s on an entry: mode %v, entries %+v", d.model().mode, entries)
+	}
+
+	// ctrl+t opens the task picker from a text field, and ctrl+s saves the timer.
+	must(t, func() error { _, err := st.StartTimer("", started); return err }())
+	d.send(load(st)())
+	d.keys("E")
+	key(tea.KeyTab) // start -> note
+	d.keys("standup")
+	key(tea.KeyCtrlT)
+	if d.model().mode != modePicker {
+		t.Fatalf("ctrl+t: mode %v; want the picker", d.model().mode)
+	}
+	key(tea.KeyEsc)
+	if d.model().mode != modeEditor || d.model().editor.value(fieldNote) != "standup" {
+		t.Fatalf("returning from the picker lost the form: mode %v", d.model().mode)
+	}
+	key(tea.KeyCtrlS)
+	if got, err := st.Timer(); err != nil || got.Note != "standup" || d.model().mode != modeEntries {
+		t.Fatalf("ctrl+s on the timer: %+v, %v, mode %v", got, err, d.model().mode)
+	}
+
+	// A validation error from ctrl+s returns focus to the field at fault.
+	d.keys("E")
+	key(tea.KeyCtrlU)
+	d.keys("23:00")
+	key(tea.KeyCtrlS)
+	if ed := d.model().editor; d.model().mode != modeEditor || ed.err == "" || ed.focus != fieldStart {
+		t.Fatalf("future start: mode %v, err %q, focus %d", d.model().mode, ed.err, ed.focus)
+	}
+}
