@@ -83,7 +83,7 @@ func TestIntegrationEditKeepsCredential(t *testing.T) {
 	// A rejected credential is shown as such.
 	keys["jira"] = `{"user":"me@example.com","token":"revoked"}`
 	d.send(d.model().connectCmd(false)())
-	if got := d.model().View(); !strings.Contains(got, "✗ could not verify the credentials: HTTP 401: Client must be authenticated") {
+	if got := d.model().View(); !strings.Contains(got, "✗ could not verify the credentials: Jira Cloud (REST v3), basic auth as me@example.com with API token (7 chars): HTTP 401: Client must be authenticated") {
 		t.Errorf("settings do not show the failed verification:\n%s", got)
 	}
 }
@@ -106,5 +106,30 @@ func TestIntegrationSwitchNeedsToken(t *testing.T) {
 	}
 	if _, ok := keys["redmine"]; ok {
 		t.Error("a credential was stored for redmine")
+	}
+}
+
+// A Jira Cloud site cannot be saved without an account email, which would
+// otherwise select Data Center mode.
+func TestJiraCloudNeedsEmail(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "yatta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	must(t, st.SetIntegration(store.IntegrationConfig{Integration: "jira", BaseURL: "https://x.atlassian.net", KeyringKey: "jira"}))
+	keys := memSecrets{"jira": `{"token":"tok"}`} // the email lost to the earlier bug
+	d := &driver{t: t, m: New(st, nil, keys, time.UTC)}
+	d.send(load(st)())
+	d.keys(",", "j", "enter")
+	d.keys("enter", "enter", "enter") // system; URL; empty email
+	if got := d.model().View(); !strings.Contains(got, "Jira Cloud needs your account email") {
+		t.Errorf("an empty email was accepted for a Cloud site:\n%s", got)
+	}
+	d.keys("me@example.com", "enter", "enter", "enter") // email; query; kept token
+	var cred Credential
+	must(t, json.Unmarshal([]byte(keys["jira"]), &cred))
+	if cred != (Credential{User: "me@example.com", Token: "tok"}) {
+		t.Errorf("stored credential = %+v", cred)
 	}
 }

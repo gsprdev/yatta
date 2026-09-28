@@ -21,14 +21,17 @@ const DefaultBaseURL = "https://api.track.toggl.com"
 
 const perPage = 200
 
-type Adapter struct{ c remote.Client }
+type Adapter struct {
+	c     remote.Client
+	token string // for describing the credential, never for display in full
+}
 
 // New builds a Toggl adapter. baseURL may be empty for the public API.
 func New(baseURL, apiToken string) *Adapter {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
-	return &Adapter{c: remote.Client{BaseURL: baseURL, Auth: func(r *http.Request) {
+	return &Adapter{token: apiToken, c: remote.Client{BaseURL: baseURL, Auth: func(r *http.Request) {
 		r.SetBasicAuth(apiToken, "api_token")
 	}}}
 }
@@ -42,7 +45,7 @@ func (a *Adapter) Verify(ctx context.Context) (string, error) {
 		Email    string `json:"email"`
 	}
 	if err := a.c.Do(ctx, http.MethodGet, "/api/v9/me", nil, &me); err != nil {
-		return "", err
+		return "", fmt.Errorf("Toggl, API token %s: %w", remote.Fingerprint(a.token), err)
 	}
 	if me.Email == "" {
 		return "", fmt.Errorf("Toggl did not identify the account")

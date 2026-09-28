@@ -363,11 +363,11 @@ type Adapter interface {
 
 Create is the only write. `task` is the unit's target task, passed so the adapter can read its native ID and `Extra` without any store access. Adapters take a `core.Unit` and neither know nor care whether its duration summarizes one entry or five — aggregation is invisible below the planning layer. Credentials and base URL are injected at construction; an adapter never reads configuration or the keyring itself. Each adapter unmarshals `Task.Remote.Extra` into its own unexported struct.
 
-Verify is a read of the remote's "current user" endpoint (Jira `/myself`, Redmine `/users/current.json`, Toggl `/me`). It runs whenever the adapter is built — at startup and after integration setup — and returns a line such as `Jira Cloud (REST v3) as Name <email>`, which the interface shows. A search that runs as the wrong account, or anonymously, can succeed with no results; verifying first turns that into a visible account name or a visible error.
+Verify is a read of the remote's "current user" endpoint (Jira `/myself`, Redmine `/users/current.json`, Toggl `/me`). It runs whenever the adapter is built — at startup and after integration setup — and returns a line such as `Jira Cloud (REST v3) as Name <email>`, which the interface shows. A search that runs as the wrong account, or anonymously, can succeed with no results; verifying first turns that into a visible account name or a visible error. A rejection names what was sent — the mode, the account, and the token's fingerprint (below) — and a Jira Cloud URL with no account email is called out, since that selects Data Center mode. The integration form refuses that combination.
 
 All three are plain `net/http` clients with `encoding/json`, sharing a small JSON client in `internal/remote` that turns an error response into the remote's own message, since that message is what the user sees in the attention list.
 
-For diagnosis, `yatta --debug` appends every remote request and response to `debug.log` beside the database. The trace wraps the HTTP transport (`remote.Trace`) and records method, URL, bodies, status, and timing. It writes no headers, and of `Authorization` only the scheme (`Basic`, `Bearer`), so it never holds a credential. It is off by default and only ever written locally.
+For diagnosis, `yatta --debug` appends every remote request and response to `debug.log` beside the database. The trace wraps the HTTP transport (`remote.Trace`) and records method, URL, bodies, status, and timing. Of the headers it describes only the credentials, and those by fingerprint: the scheme, a basic-auth user when it is an email address, and for each secret its length and, when it is 16 characters or longer, its last four characters (`remote.Fingerprint`). That is enough to tell which token was sent without the trace holding one. It is off by default and only ever written locally.
 
 | Adapter | Tasks fetched | Where time is recorded |
 |---|---|---|
@@ -528,7 +528,7 @@ The database is `yatta.db` in the platform's per-user data directory: `$XDG_DATA
 - **No overlap validation in `core`.** `Group` does not validate spans and `PlanUpload` has no abort path. A remote that genuinely cares enforces it inside its own adapter, where a rejection is an ordinary per-op failure.
 - **Credentials in the OS keyring, never in SQLite.**
 - **Integration setup edits in place and verifies on connect.** Re-entering the whole configuration to change a query invited mistakes: an email left empty silently switched Jira from Cloud to Data Center, which showed up only as a fetch with no results. The form pre-fills the stored values, keeps the stored token when the field is left empty, and each connection is checked with `Adapter.Verify` so the account and API in use are visible.
-- **Debug tracing is an opt-in flag, not a setting.** It is used rarely and while diagnosing, and a flag keeps it out of the database. The trace records bodies but never a credential.
+- **Debug tracing is an opt-in flag, not a setting.** It is used rarely and while diagnosing, and a flag keeps it out of the database. The trace records bodies, and credentials only by fingerprint: "no key sent" and "the wrong key sent" look identical in a trace that omits them entirely.
 
 ## Open Questions
 

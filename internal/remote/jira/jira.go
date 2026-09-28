@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gsprdev/yatta/internal/core"
@@ -23,13 +24,14 @@ const DefaultQuery = "resolution = Unresolved AND (assignee = currentUser() OR r
 const pageSize = 100
 
 type Adapter struct {
-	c     remote.Client
-	cloud bool
-	query string
+	c            remote.Client
+	cloud        bool
+	query        string
+	email, token string // for describing the credential, never for display in full
 }
 
 func New(baseURL, email, token, query string) *Adapter {
-	a := &Adapter{cloud: email != "", query: query}
+	a := &Adapter{cloud: email != "", query: query, email: email, token: token}
 	if a.query == "" {
 		a.query = DefaultQuery
 	}
@@ -55,7 +57,7 @@ func (a *Adapter) Verify(ctx context.Context) (string, error) {
 		EmailAddress string `json:"emailAddress"`
 	}
 	if err := a.c.Do(ctx, http.MethodGet, a.api()+"/myself", nil, &me); err != nil {
-		return "", err
+		return "", fmt.Errorf("%s: %w", a.credential(), err)
 	}
 	who := me.DisplayName
 	if id := cmp.Or(me.EmailAddress, me.Name); id != "" {
@@ -68,6 +70,19 @@ func (a *Adapter) Verify(ctx context.Context) (string, error) {
 		return "Jira Cloud (REST v3) as " + who, nil
 	}
 	return "Jira Data Center (REST v2, access token) as " + who, nil
+}
+
+// credential says what Verify sent, so a rejection shows which mode, account,
+// and token were tried.
+func (a *Adapter) credential() string {
+	if a.cloud {
+		return fmt.Sprintf("Jira Cloud (REST v3), basic auth as %s with API token %s", a.email, remote.Fingerprint(a.token))
+	}
+	s := fmt.Sprintf("Jira Data Center (REST v2), bearer access token %s", remote.Fingerprint(a.token))
+	if u, err := url.Parse(a.c.BaseURL); err == nil && strings.HasSuffix(u.Hostname(), ".atlassian.net") {
+		s += "; no account email is set, and Jira Cloud needs one"
+	}
+	return s
 }
 
 func (a *Adapter) api() string {

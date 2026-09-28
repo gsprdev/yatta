@@ -146,7 +146,13 @@ func (s *settingsModel) open(screen settingsScreen) tea.Cmd {
 			huh.NewGroup(
 				huh.NewInput().Title("Account email").
 					Description("Jira Cloud: your Atlassian email, with an API token below.\nJira Data Center: leave empty and use a personal access token.").
-					Value(&v.user),
+					Value(&v.user).
+					Validate(func(u string) error {
+						if strings.TrimSpace(u) == "" && strings.Contains(v.baseURL, ".atlassian.net") {
+							return fmt.Errorf("Jira Cloud needs your account email")
+						}
+						return nil
+					}),
 				huh.NewInput().Title("Issues to offer as tasks (JQL)").
 					Description("Empty for: "+jira.DefaultQuery).Value(&v.query),
 			).WithHideFunc(func() bool { return v.integration != "jira" }),

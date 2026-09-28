@@ -199,3 +199,18 @@ func TestVerifyRejected(t *testing.T) {
 		t.Errorf("err = %v; want the remote's message", err)
 	}
 }
+
+// A rejection names what was sent, and a Cloud site without an email is
+// called out: that is Data Center mode, which Cloud refuses.
+func TestVerifyRejectionNamesCredential(t *testing.T) {
+	srv, _ := server(t, `400 {"errorMessages":["Client must be authenticated"]}`)
+	_, err := New(srv.URL, "", "a-long-api-token-ending-wxyz", "").Verify(context.Background())
+	want := "Jira Data Center (REST v2), bearer access token (28 chars, ending …wxyz): HTTP 400: Client must be authenticated"
+	if err == nil || err.Error() != want {
+		t.Errorf("err = %v; want %s", err, want)
+	}
+	got := New("https://example.atlassian.net", "", "tok", "").credential()
+	if !strings.Contains(got, "no account email is set, and Jira Cloud needs one") {
+		t.Errorf("credential() = %q; want the missing email called out", got)
+	}
+}
