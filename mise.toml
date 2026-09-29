@@ -1,0 +1,34 @@
+[tools]
+go = "1.25"
+golangci-lint = "2"
+
+[env]
+CGO_ENABLED = "0"
+
+[tasks.build]
+description = "Build the yatta binary"
+run = "go build ./cmd/yatta"
+
+[tasks.run]
+description = "Run yatta"
+run = "go run ./cmd/yatta"
+
+[tasks.test]
+description = "Run all tests"
+run = "go test ./..."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run ./..."
+
+[tasks.fmt]
+description = "Format code with gofmt"
+run = "golangci-lint fmt ./..."
+
+[tasks.check]
+description = "Everything CI-worthy: lint, vet, test"
+depends = ["lint", "vet", "test"]

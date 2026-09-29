@@ -38,6 +38,7 @@ Open Questions are the live agenda. If a task needs an answer to one, name the q
 - Interfaces are declared at the consumer, not exported from the store. The exception is `remote.Adapter`, which is selected at runtime.
 - `core` is tested with table-driven tests and no mocks. The store is tested against a real SQLite file in a temp dir. Adapters are tested against `httptest.Server`.
 - Build: `CGO_ENABLED=0 go build ./cmd/yatta`.
+- Lint: `golangci-lint run ./...` (config in `.golangci.yml`; also `mise run check`). It enforces the `internal/core` stdlib-only rule and exhaustive switches over the domain enums.
 
 ## Terminology — use these words
 
