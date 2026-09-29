@@ -63,7 +63,8 @@ func (t *tracer) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	b.WriteString("\n")
 	t.mu.Lock()
-	io.WriteString(t.w, b.String())
+	// A trace that cannot be written must not fail the request it describes.
+	_, _ = io.WriteString(t.w, b.String())
 	t.mu.Unlock()
 	return resp, err
 }
