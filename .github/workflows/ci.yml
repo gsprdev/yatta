@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # Third-party actions are pinned to full commit SHAs; the comment names
       # the release. Dependabot (.github/dependabot.yml) keeps both current.
@@ -26,5 +26,8 @@ jobs:
           key: go-${{ runner.os }}-${{ hashFiles('go.sum', 'mise.toml') }}
           restore-keys: go-${{ runner.os }}-
       - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2.4.4
+        with:
+          # mise itself is pinned too; the tools it installs are locked by mise.lock.
+          version: 2026.9.16
       - run: mise run check
       - run: mise run build
