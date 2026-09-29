@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 // Secrets stores credentials in the OS keyring. The database holds only the key.
 type Secrets interface {
+	Get(key string) (string, error)
 	Set(key, value string) error
 }
 
@@ -25,6 +27,11 @@ type Credential struct {
 	User  string `json:"user,omitempty"` // Jira: account email
 	Token string `json:"token"`          // API token or key
 }
+
+// probeJira finds what kind of Jira an address is; a variable for tests.
+var probeJira = jira.Probe
+
+const probeTimeout = 5 * time.Second
 
 type settingsScreen int
 
@@ -51,6 +58,14 @@ type settingsValues struct {
 	increment, direction, minimum, belowMin, aggregate string
 
 	integration, baseURL, user, token, query string
+	// stored is the credential of the configured integration, storedFor, so
+	// the form can show its email and keep its token when the token field is
+	// left empty.
+	stored    *Credential
+	storedFor string
+
+	jiraSite jira.Site // what the Jira address was found to be
+	probed   string    // the address jiraSite was found for
 
 	purgeDate                   string
 	purgeBefore                 time.Time
@@ -63,7 +78,7 @@ type purgeCountsMsg struct {
 	err                         error
 }
 
-func newSettings(d data) settingsModel {
+func newSettings(d data, secrets Secrets) settingsModel {
 	v := &settingsValues{
 		increment: fmt.Sprint(int(d.policy.Increment / time.Minute)),
 		direction: string(orDefault(d.policy.Direction, core.Nearest)),
@@ -74,6 +89,12 @@ func newSettings(d data) settingsModel {
 	v.integration = "none"
 	if c := d.config; c != nil {
 		v.integration, v.baseURL, v.query = c.Integration, c.BaseURL, c.TaskQuery
+		if secrets != nil {
+			var cred Credential
+			if raw, err := secrets.Get(c.KeyringKey); err == nil && json.Unmarshal([]byte(raw), &cred) == nil {
+				v.stored, v.storedFor, v.user = &cred, c.Integration, cred.User
+			}
+		}
 	}
 	return settingsModel{v: v}
 }
@@ -113,41 +134,75 @@ func (s *settingsModel) open(screen settingsScreen) tea.Cmd {
 				huh.NewOption("One record per task per day", string(core.AggTaskDay))).Value(&v.aggregate),
 		))
 	case screenIntegration:
-		v.user, v.token = "", ""
+		v.token = ""
+		token := func(system, title, desc string) *huh.Group {
+			desc += "\nStored in the OS keyring, never in the database."
+			if v.stored != nil && v.storedFor == system {
+				desc += "\nLeave empty to keep the stored token."
+			}
+			return huh.NewGroup(huh.NewInput().Title(title).Description(desc).
+				EchoMode(huh.EchoModePassword).Value(&v.token).
+				Validate(func(t string) error {
+					if strings.TrimSpace(t) == "" && (v.stored == nil || v.integration != v.storedFor) {
+						return fmt.Errorf("a token is required")
+					}
+					return nil
+				}))
+		}
+		isJira := func() bool { return v.integration == "jira" }
 		s.form = huh.NewForm(
 			huh.NewGroup(huh.NewSelect[string]().Title("Remote system").Options(
 				huh.NewOption("None", "none"), huh.NewOption("Jira", "jira"),
 				huh.NewOption("Redmine", "redmine"), huh.NewOption("Toggl", "toggl")).Value(&v.integration)),
 			huh.NewGroup(
-				huh.NewInput().Title("Base URL").Placeholder("https://example.atlassian.net").Value(&v.baseURL).
+				huh.NewInput().Title("Address").Description("As in your browser; any page of the site will do.").
+					Placeholder("https://mycompany.atlassian.net").Value(&v.baseURL).
 					Validate(func(u string) error {
+						u = strings.TrimSpace(u)
 						if !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
-							return fmt.Errorf("enter the full URL, starting with https://")
+							return fmt.Errorf("enter the full address, starting with https://")
+						}
+						if isJira() && u != v.probed {
+							// Runs on enter and again on leaving the field; once is enough.
+							ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+							defer cancel()
+							site, err := probeJira(ctx, u)
+							if err != nil {
+								site = jira.Guess(u)
+							}
+							v.jiraSite, v.probed = site, u
 						}
 						return nil
 					}),
 			).WithHideFunc(func() bool { return v.integration != "jira" && v.integration != "redmine" }),
 			huh.NewGroup(
-				huh.NewInput().Title("Account email").
-					Description("Jira Cloud: your Atlassian email, with an API token below.\nJira Data Center: leave empty and use a personal access token.").
-					Value(&v.user),
+				huh.NewInput().Title("Atlassian account email").
+					Description("This site is Jira Cloud, hosted by Atlassian. Its tokens work only\n"+
+						"together with the email you sign in to Atlassian with.").
+					Value(&v.user).
+					Validate(func(u string) error {
+						if strings.TrimSpace(u) == "" {
+							return fmt.Errorf("Jira Cloud needs your account email")
+						}
+						return nil
+					}),
+			).WithHideFunc(func() bool { return !isJira() || !v.jiraSite.Cloud }),
+			huh.NewGroup(
 				huh.NewInput().Title("Issues to offer as tasks (JQL)").
 					Description("Empty for: "+jira.DefaultQuery).Value(&v.query),
-			).WithHideFunc(func() bool { return v.integration != "jira" }),
+			).WithHideFunc(func() bool { return !isJira() }),
 			huh.NewGroup(
 				huh.NewInput().Title("Issues to offer as tasks (issue filter)").
 					Description("Empty for: "+redmine.DefaultQuery).Value(&v.query),
 			).WithHideFunc(func() bool { return v.integration != "redmine" }),
-			huh.NewGroup(
-				huh.NewInput().Title("API token").Description("Stored in the OS keyring, never in the database.").
-					EchoMode(huh.EchoModePassword).Value(&v.token).
-					Validate(func(t string) error {
-						if strings.TrimSpace(t) == "" {
-							return fmt.Errorf("a token is required")
-						}
-						return nil
-					}),
-			).WithHideFunc(func() bool { return v.integration == "none" }),
+			token("jira", "API token (Jira Cloud)", jira.CloudTokenHelp).
+				WithHideFunc(func() bool { return !isJira() || !v.jiraSite.Cloud }),
+			token("jira", "Personal access token (Jira Data Center, your company's own server)", jira.DataCenterTokenHelp).
+				WithHideFunc(func() bool { return !isJira() || v.jiraSite.Cloud }),
+			token("redmine", "API key", "In Redmine: My account → API access key → Show.").
+				WithHideFunc(func() bool { return v.integration != "redmine" }),
+			token("toggl", "API token", "In Toggl Track: Profile settings → API Token.").
+				WithHideFunc(func() bool { return v.integration != "toggl" }),
 		)
 	case screenPurgeDate:
 		v.purgeDate = ""
@@ -196,7 +251,9 @@ func (s settingsModel) help() string {
 	return "enter next · esc back"
 }
 
-func (s settingsModel) view() string {
+// view shows the menu, with the state of the remote connection beneath its
+// entry.
+func (s settingsModel) view(connection string) string {
 	if s.form != nil {
 		return s.form.View()
 	}
@@ -208,8 +265,24 @@ func (s settingsModel) view() string {
 			marker = "› "
 		}
 		b.WriteString(marker + item + "\n")
+		if i == 1 && connection != "" {
+			b.WriteString("    " + connection + "\n")
+		}
 	}
 	return b.String()
+}
+
+// connection describes the remote connection for the settings menu.
+func (m Model) connection() string {
+	switch {
+	case m.connErr != nil:
+		return errStyle.Render("✗ " + m.connErr.Error())
+	case m.who != "":
+		return okStyle.Render("✓ " + m.who)
+	case m.data.config != nil:
+		return faintStyle.Render("not yet verified")
+	}
+	return faintStyle.Render("none configured")
 }
 
 func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -275,7 +348,7 @@ func (m Model) settingsDone(screen settingsScreen) (tea.Model, tea.Cmd) {
 
 	case screenIntegration:
 		if v.integration == "none" {
-			m.ad = nil
+			m.ad, m.who, m.connErr = nil, "", nil
 			return m, m.mutate("integration removed", func(st *store.Store) error { return st.ClearIntegration() })
 		}
 		cfg := store.IntegrationConfig{Integration: v.integration, KeyringKey: v.integration}
@@ -283,7 +356,21 @@ func (m Model) settingsDone(screen settingsScreen) (tea.Model, tea.Cmd) {
 			cfg.BaseURL = strings.TrimRight(strings.TrimSpace(v.baseURL), "/")
 			cfg.TaskQuery = strings.TrimSpace(v.query)
 		}
-		cred, err := json.Marshal(Credential{User: strings.TrimSpace(v.user), Token: strings.TrimSpace(v.token)})
+		user := strings.TrimSpace(v.user)
+		if v.integration == "jira" {
+			if v.probed == "" {
+				v.jiraSite = jira.Guess(v.baseURL)
+			}
+			cfg.BaseURL = v.jiraSite.URL // the site root, not the page pasted
+			if !v.jiraSite.Cloud {
+				user = ""
+			}
+		}
+		token := strings.TrimSpace(v.token)
+		if token == "" && v.stored != nil && v.integration == v.storedFor {
+			token = v.stored.Token
+		}
+		cred, err := json.Marshal(Credential{User: user, Token: token})
 		if err != nil {
 			return m, flash(err.Error(), true)
 		}

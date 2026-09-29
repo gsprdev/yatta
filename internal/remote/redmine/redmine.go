@@ -24,6 +24,7 @@ type Adapter struct {
 	c     remote.Client
 	query url.Values
 	loc   *time.Location // for the spent_on date
+	key   string         // for describing the credential, never for display in full
 }
 
 // New builds a Redmine adapter. query is an issues.json filter in URL query
@@ -40,10 +41,30 @@ func New(baseURL, apiKey, query string, loc *time.Location) (*Adapter, error) {
 		c:     remote.Client{BaseURL: baseURL, Auth: func(r *http.Request) { r.Header.Set("X-Redmine-API-Key", apiKey) }},
 		query: q,
 		loc:   loc,
+		key:   apiKey,
 	}, nil
 }
 
 func (a *Adapter) Integration() string { return "redmine" }
+
+// Verify names the account the API key belongs to.
+func (a *Adapter) Verify(ctx context.Context) (string, error) {
+	var resp struct {
+		User struct {
+			Login     string `json:"login"`
+			Firstname string `json:"firstname"`
+			Lastname  string `json:"lastname"`
+		} `json:"user"`
+	}
+	if err := a.c.Do(ctx, http.MethodGet, "/users/current.json", nil, &resp); err != nil {
+		return "", fmt.Errorf("Redmine, API key %s: %w", remote.Fingerprint(a.key), err)
+	}
+	u := resp.User
+	if u.Login == "" {
+		return "", fmt.Errorf("Redmine did not identify the account")
+	}
+	return strings.TrimSpace("Redmine as "+u.Firstname+" "+u.Lastname) + " (" + u.Login + ")", nil
+}
 
 type ref struct {
 	ID   int    `json:"id"`

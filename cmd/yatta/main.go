@@ -2,9 +2,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,14 +25,15 @@ import (
 
 func main() {
 	dbPath := flag.String("db", "", "database file (default: yatta.db in the user data directory)")
+	debug := flag.Bool("debug", false, "append every request to the remote system, and its response, to debug.log beside the database (credentials are left out)")
 	flag.Parse()
-	if err := run(*dbPath); err != nil {
+	if err := run(*dbPath, *debug); err != nil {
 		fmt.Fprintln(os.Stderr, "yatta:", err)
 		os.Exit(1)
 	}
 }
 
-func run(dbPath string) error {
+func run(dbPath string, debug bool) error {
 	if dbPath == "" {
 		dir, err := dataDir()
 		if err != nil {
@@ -40,6 +43,17 @@ func run(dbPath string) error {
 	}
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return err
+	}
+	if debug {
+		path := filepath.Join(filepath.Dir(dbPath), "debug.log")
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		// The adapters use the default client.
+		http.DefaultClient.Transport = remote.Trace(f, http.DefaultTransport)
+		defer fmt.Fprintln(os.Stderr, "yatta: remote requests were logged to", path)
 	}
 	st, err := store.Open(dbPath)
 	if err != nil {
@@ -89,7 +103,15 @@ func dataDir() (string, error) {
 func newAdapter(cfg *store.IntegrationConfig, cred ui.Credential) (remote.Adapter, error) {
 	switch cfg.Integration {
 	case "jira":
-		return jira.New(cfg.BaseURL, cred.User, cred.Token, cfg.TaskQuery), nil
+		// What kind of Jira the site is decides the route and authentication,
+		// so it is asked each time rather than stored.
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		site, err := jira.Probe(ctx, cfg.BaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("could not reach %s: %w", cfg.BaseURL, err)
+		}
+		return jira.New(site, cred.User, cred.Token, cfg.TaskQuery), nil
 	case "redmine":
 		return redmine.New(cfg.BaseURL, cred.Token, cfg.TaskQuery, time.Local)
 	case "toggl":

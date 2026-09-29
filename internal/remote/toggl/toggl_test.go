@@ -101,3 +101,13 @@ func TestCreateOnClientRefused(t *testing.T) {
 		t.Error("time entry on a client was attempted")
 	}
 }
+
+func TestVerify(t *testing.T) {
+	srv, _ := server(t, map[string]string{
+		"GET /api/v9/me": `200 {"id":1,"fullname":"Jane Doe","email":"jane@example.com"}`,
+	})
+	got, err := New(srv.URL, "tok").Verify(context.Background())
+	if err != nil || got != "Toggl as Jane Doe <jane@example.com>" {
+		t.Errorf("Verify = %q, %v", got, err)
+	}
+}
