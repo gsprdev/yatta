@@ -91,7 +91,7 @@ func TestIntegrationEditKeepsCredential(t *testing.T) {
 	if cred != (Credential{User: "me@example.com", Token: "tok"}) {
 		t.Errorf("stored credential = %+v; want the original email and token kept", cred)
 	}
-	if got := d.model().View(); !strings.Contains(got, "✓ Jira Cloud as Me <me@example.com> · ⚠ unscoped token") {
+	if got := d.model().View(); !strings.Contains(got, "✓ Jira Cloud as Me <me@example.com>") {
 		t.Errorf("settings do not show the verified account:\n%s", got)
 	}
 

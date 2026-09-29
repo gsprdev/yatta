@@ -4,8 +4,8 @@
 // (hosted by Atlassian) takes the account email and an API token as basic
 // auth, on REST v3. A scoped token, the least-privilege choice, is accepted
 // only through Atlassian's API gateway, so Cloud requests go there when the
-// site's cloud ID is known; a classic token is accepted only at the site
-// itself. Jira Data Center (run by the company itself) takes a personal
+// site's cloud ID is known. The gateway accepts a classic (unscoped) token
+// too; the two cannot be told apart, and no attempt is made to. Jira Data Center (run by the company itself) takes a personal
 // access token as a bearer token, on REST v2.
 package jira
 
@@ -109,7 +109,6 @@ func Probe(ctx context.Context, raw string) (Site, error) {
 type Adapter struct {
 	c            remote.Client
 	site         Site
-	classic      bool // a Cloud token accepted only at the site: unscoped
 	query        string
 	email, token string // for describing the credential, never for display in full
 }
@@ -118,9 +117,6 @@ type Adapter struct {
 // Cloud and unused for Data Center.
 func New(site Site, email, token, query string) *Adapter {
 	a := &Adapter{site: site, query: cmp.Or(query, DefaultQuery), email: email, token: token}
-	// Without the cloud ID the gateway cannot be used, and at the site only a
-	// classic token is accepted.
-	a.classic = site.Cloud && site.CloudID == ""
 	base := site.URL
 	if site.Cloud && site.CloudID != "" {
 		base = gateway + "/ex/jira/" + site.CloudID
@@ -143,21 +139,10 @@ type myself struct {
 	EmailAddress string `json:"emailAddress"`
 }
 
-// Verify names the account. A Cloud token refused by the gateway is tried at
-// the site, where only a classic (unscoped) token is accepted; if that works
-// the adapter stays there, and the result says the token has full access.
+// Verify names the account the credentials belong to.
 func (a *Adapter) Verify(ctx context.Context) (string, error) {
 	var me myself
-	err := a.c.Do(ctx, http.MethodGet, a.api()+"/myself", nil, &me)
-	if err != nil && unauthorized(err) && a.site.Cloud && a.c.BaseURL != a.site.URL {
-		atSite := a.c
-		atSite.BaseURL = a.site.URL
-		var me2 myself
-		if atSite.Do(ctx, http.MethodGet, a.api()+"/myself", nil, &me2) == nil {
-			a.c, a.classic, me, err = atSite, true, me2, nil
-		}
-	}
-	if err != nil {
+	if err := a.c.Do(ctx, http.MethodGet, a.api()+"/myself", nil, &me); err != nil {
 		if unauthorized(err) && a.site.Cloud {
 			return "", fmt.Errorf("%s: %w (check the email is exactly your Atlassian account's, "+
 				"and the token has the scopes %s)", a.credential(), err, Scopes)
@@ -171,10 +156,7 @@ func (a *Adapter) Verify(ctx context.Context) (string, error) {
 	if who == "" {
 		return "", fmt.Errorf("Jira did not identify the account")
 	}
-	switch {
-	case a.classic:
-		return "Jira Cloud as " + who + " · ⚠ unscoped token: it can do anything your account can; a scoped token is safer", nil
-	case a.site.Cloud:
+	if a.site.Cloud {
 		return "Jira Cloud as " + who, nil
 	}
 	return "Jira Data Center as " + who, nil

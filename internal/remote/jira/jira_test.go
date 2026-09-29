@@ -269,28 +269,9 @@ func TestVerify(t *testing.T) {
 	}
 }
 
-// A classic token is refused by the gateway and accepted at the site. The
-// adapter stays at the site, and says the token is unscoped.
-func TestVerifyClassicToken(t *testing.T) {
-	gw, _ := routes(t, map[string]string{"GET /ex/jira/abc/rest/api/3/myself": unauth})
-	site, _ := routes(t, map[string]string{
-		"GET /rest/api/3/myself":             me,
-		"POST /rest/api/3/issue/101/worklog": `200 {"id":"9"}`,
-	})
-	withGateway(t, gw.URL)
-	a := New(Site{URL: site.URL, Cloud: true, CloudID: "abc"}, "me@example.com", "tok", "")
-	got, err := a.Verify(context.Background())
-	if err != nil || !strings.Contains(got, "Jira Cloud as Me <me@example.com> · ⚠ unscoped token") {
-		t.Errorf("Verify = %q, %v; want the unscoped token called out", got, err)
-	}
-	if _, err := a.Create(context.Background(), issueTask(), core.Unit{Start: time.Now(), Duration: time.Hour}); err != nil {
-		t.Errorf("Create after falling back to the site: %v", err)
-	}
-}
-
 // A rejection names what was sent and which scopes are needed.
 func TestVerifyRejected(t *testing.T) {
-	srv, _ := routes(t, map[string]string{"GET /ex/jira/abc/rest/api/3/myself": unauth, "GET /rest/api/3/myself": unauth, "GET /rest/api/2/myself": unauth})
+	srv, _ := routes(t, map[string]string{"GET /ex/jira/abc/rest/api/3/myself": unauth, "GET /rest/api/2/myself": unauth})
 	withGateway(t, srv.URL)
 	_, err := New(Site{URL: srv.URL, Cloud: true, CloudID: "abc"}, "me@exmaple.com", "a-long-api-token-ending-wxyz", "").
 		Verify(context.Background())

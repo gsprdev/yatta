@@ -13,9 +13,8 @@ import (
 //
 //	YATTA_JIRA_URL    e.g. https://gsprdev.atlassian.net
 //	YATTA_JIRA_EMAIL  the account email
-//	YATTA_JIRA_TOKEN  an API token for that account: scoped (read:jira-user,
-//	                  read:jira-work, write:jira-work) to test the gateway, or
-//	                  classic to test the fallback to the site
+//	YATTA_JIRA_TOKEN  an API token for that account, scoped to read:jira-user,
+//	                  read:jira-work and write:jira-work
 //
 // It expects issues labelled yatta-test: an epic with a story, and a subtask
 // under that story. It adds a 15-minute worklog to that story, which yatta
