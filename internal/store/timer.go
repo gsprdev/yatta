@@ -11,15 +11,15 @@ import (
 // Timer returns the running timer, or nil if none is running.
 func (s *Store) Timer() (*core.ActiveTimer, error) {
 	var start int64
-	var task sql.NullString
-	err := s.db.QueryRow("SELECT start, task_id FROM active_timer WHERE id = 1").Scan(&start, &task)
+	var task, note sql.NullString
+	err := s.db.QueryRow("SELECT start, task_id, note FROM active_timer WHERE id = 1").Scan(&start, &task, &note)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &core.ActiveTimer{Start: fromUnix(start), TaskID: task.String}, nil
+	return &core.ActiveTimer{Start: fromUnix(start), TaskID: task.String, Note: note.String}, nil
 }
 
 // StartTimer starts a timer at now against taskID ("" for no task yet). A
@@ -50,6 +50,21 @@ func (s *Store) SetTimerTask(taskID string) error {
 	return nil
 }
 
+// SaveTimer replaces the running timer's start, task, and note, which is how a
+// timer is backdated or given a note before it stops. It returns ErrNotFound
+// when no timer is running.
+func (s *Store) SaveTimer(t core.ActiveTimer) error {
+	res, err := s.db.Exec("UPDATE active_timer SET start = ?, task_id = ?, note = ? WHERE id = 1",
+		unix(t.Start), nullStr(t.TaskID), nullStr(t.Note))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // StopTimer stops the running timer at now and returns the entry it produced.
 // It returns nil when no timer was running, or when it ran for under a second.
 func (s *Store) StopTimer(now time.Time) (*core.TimeEntry, error) {
@@ -64,8 +79,8 @@ func (s *Store) StopTimer(now time.Time) (*core.TimeEntry, error) {
 
 func (s *Store) stopTimer(tx *sql.Tx, now time.Time) (entryID string, err error) {
 	var start int64
-	var task sql.NullString
-	err = tx.QueryRow("SELECT start, task_id FROM active_timer WHERE id = 1").Scan(&start, &task)
+	var task, note sql.NullString
+	err = tx.QueryRow("SELECT start, task_id, note FROM active_timer WHERE id = 1").Scan(&start, &task, &note)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -81,8 +96,8 @@ func (s *Store) stopTimer(tx *sql.Tx, now time.Time) (entryID string, err error)
 	}
 	entryID = newID()
 	ts := unix(s.now())
-	_, err = tx.Exec(`INSERT INTO time_entries (id, start, duration_s, task_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, entryID, start, dur, task, ts, ts)
+	_, err = tx.Exec(`INSERT INTO time_entries (id, start, duration_s, task_id, note, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, entryID, start, dur, task, note, ts, ts)
 	return entryID, err
 }
 

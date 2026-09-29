@@ -42,4 +42,5 @@ func (u UploadState) Locked() bool { return u.RecordID != "" }
 type ActiveTimer struct {
 	Start  time.Time
 	TaskID string // "" => started before a task was chosen
+	Note   string // becomes the note of the entry when the timer stops
 }
