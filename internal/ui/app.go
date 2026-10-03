@@ -201,7 +201,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // refresh pushes freshly loaded data into the sub-models.
 func (m *Model) refresh() {
-	m.entries.setEntries(m.data, m.loc)
+	m.entries.setEntries(m.data, m.loc, m.now())
 	m.fillAttention()
 	m.tasks.setTasks(m.data.tasks)
 }
@@ -243,7 +243,7 @@ func (m Model) View() string {
 	case modeSettings:
 		body, help = m.settings.view(m.connection()), m.settings.help()
 	default:
-		body, help = m.entries.view(), m.entries.help()
+		body, help = m.entries.view(m.now()), m.entries.help()
 	}
 	if m.flash != "" {
 		if m.isErr {

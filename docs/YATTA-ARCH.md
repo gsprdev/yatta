@@ -437,7 +437,7 @@ The resting view is `modeEntries` with a status bar rendered by the root model o
 
 | Requirement | Component |
 |---|---|
-| Entry list, search, filter, resume-from-recent | `bubbles/list` — its built-in filtering is the search requirement, and the list is ordered most-recent-first so resume is a filter plus Enter |
+| Entry list, search, filter, resume-from-recent | `bubbles/list` — its built-in filtering is the search requirement, and the list is ordered most-recent-first so resume is a filter plus Enter. The list shows one local day at a time, by start time, with the day as its title; ←/→ move between days that have entries, and today always has a page. A search covers every day, its results carry their dates, and clearing it returns to the day of the selected entry. Today's total in the status bar counts today whatever day is shown |
 | Merged local/remote view | Opening a locked entry shows it read-only with its record: the uploaded duration and note against the local time, and under aggregation every member entry. An excluded entry is marked as such. The entry list marks each entry's state |
 | Task tree picker | `bubbles/list` over a depth-flattened tree with indent prefixes, showing each remote task's label and filtering on the full ancestry path plus label, so typing `PROJ-123` finds the ticket; non-`Selectable()` tasks omitted |
 | Entry create / correct | `bubbles/textinput` for times and note, plus the picker for the task — reassociation is this same flow, not a separate one. A locked entry opens read-only. The running timer opens in the same editor without the end field, saving start, task, and note back to the timer; a start in the future is refused |
@@ -542,3 +542,4 @@ The database is `yatta.db` in the platform's per-user data directory: `$XDG_DATA
 ## Open Questions
 
 - **Jira Cloud on a custom domain.** Atlassian lets a Cloud site use the company's own domain. Whether such a site answers `/_edge/tenant_info` is unverified; if not, it is taken as Data Center and verification fails, naming Data Center. Settle against a real custom-domain site.
+- **The entry list pages by day, and search spans every day.** A flat list of every entry put a date on each row and buried today among older work. One day per page makes the day the heading and keeps the recent day in view. Search stays global because recall and resume usually reach back to an earlier day; restricting it to the shown day would turn a search into paging. All entries are still loaded at once and split by day in memory, so neither search nor today's total needs another query.
