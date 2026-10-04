@@ -23,6 +23,8 @@ type entriesModel struct {
 	days      []time.Time // local midnights with entries, and today; newest first
 	day       time.Time   // the day shown; zero until the first load
 	searching bool        // the list holds every day's entries, for a search
+	entries   []core.TimeEntry
+	timer     *core.ActiveTimer
 	loc       *time.Location
 }
 
@@ -85,6 +87,7 @@ func newEntriesModel() entriesModel {
 func (m *entriesModel) setEntries(d data, loc *time.Location, now time.Time) {
 	selected := m.selectedID()
 	m.loc = loc
+	m.entries, m.timer = d.entries, d.timer
 	m.all = make([]entryItem, len(d.entries))
 	today := dayOf(now, loc)
 	m.days = []time.Time{today}
@@ -185,7 +188,8 @@ func (m *entriesModel) update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-// title names the shown day, relative to today where that helps.
+// title names the shown day, relative to today where that helps, and the
+// time recorded on it.
 func (m entriesModel) title(now time.Time) string {
 	if m.searching {
 		return "All days"
@@ -197,7 +201,7 @@ func (m entriesModel) title(now time.Time) string {
 	case m.day.Equal(today.AddDate(0, 0, -1)):
 		title += " · yesterday"
 	}
-	return title
+	return title + " · total " + short(core.DayTotal(m.entries, m.timer, m.day, now, m.loc))
 }
 
 func newEntryItem(e core.TimeEntry, d data, loc *time.Location) entryItem {

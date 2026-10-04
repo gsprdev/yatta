@@ -55,7 +55,7 @@ Note that path 1 would require its own security assessment rather than inheritin
 YATTA is one persistent application, not a set of invocations. Because it is expected to stay open, three things are always visible without navigation:
 
 - **The current timer** — what is running, against which task, and for how long. This is the single most-consulted piece of information in the product and it must never require a keystroke to see.
-- **Today's accumulated time** — a running total for the current local day. This is not reporting or analytics; it is the ambient feedback that makes under-recording visible while there is still time to fix it.
+- **Today's accumulated time** — a running total for the current local day. This is not reporting or analytics; it is the ambient feedback that makes under-recording visible while there is still time to fix it. The entry list, which shows one day at a time, likewise shows the total for the day on screen, so a gap on an earlier day is as visible as one today.
 - **Attention indicators** — counts for pending uploads, failed uploads, not-yet-uploaded entries whose remote task has departed, and entries with no task.
 
 Everything else is reached by keystroke from this resting view.
@@ -201,7 +201,7 @@ Aggregation is a deliberately narrow concern, separate from full cross-system ti
 | Hierarchical local task management | Browser-based interface |
 | Finding remote tasks by their label (e.g. a ticket number) | |
 | One optional remote integration | Reading existing entries from remote |
-| Deliberate, one-way upload with optional date bound | Reporting / analytics UI beyond the current-day total |
+| Deliberate, one-way upload with optional date bound | Reporting / analytics UI beyond the current-day total and the total of the day shown in the entry list |
 | Rounding at upload time (stored as remote record) | Full cross-system timesheet reporting (e.g. summarizing ticketed and non-ticketed work into one NetSuite-style total) |
 | Aggregation at upload time (by task + day, into the remote record) | Scriptable or user-defined rounding rules |
 | Merged local/remote view per entry (and per aggregate group), read-only | Aggregation, merging, or editing of local records themselves |
@@ -248,6 +248,7 @@ This iteration is done when, against each of Jira, Redmine, and Toggl, a user ca
 - **Discard before upload; purge by date after.** An entry not yet uploaded can be discarded. Uploaded entries are never deleted individually; the user clears out old local records by purging every entry before a chosen date. Purge covers every state, and warns first when the range holds entries never uploaded — louder for failed entries than for pending or unassigned ones.
 - **A task is required only for upload.** Unassigned entries and timers are allowed and counted as needing attention, since recording first and classifying later is the lowest-friction path.
 - **Today's running total is in scope.** It belongs to the always-visible working surface, not to reporting.
+- **The total of the day shown in the entry list is in scope.** It is the same ambient figure for the day being reviewed or corrected, not a report: one number for one day, beside the entries that make it up.
 - **Zero after rounding is excluded** unless a round-up minimum raises it. It gets the same sentinel as a below-minimum exclusion.
 - **Entries on departed tasks fail at upload.** They are not filtered out beforehand; the failure puts them in the error list, where the user reassigns them.
 - **Repeated uploads are independent.** Two uploads on the same day produce two records for the same task and day. This is expected, not handled.

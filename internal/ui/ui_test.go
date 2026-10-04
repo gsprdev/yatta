@@ -470,17 +470,17 @@ func TestEntriesPageByDay(t *testing.T) {
 		}
 	}
 
-	page("Mon 02 Mar 2026 · today", "today")
+	page("Mon 02 Mar 2026 · today · total 30m", "today")
 	d.keys("l") // already on the newest day
-	page("Mon 02 Mar 2026 · today", "today")
+	page("Mon 02 Mar 2026 · today · total 30m", "today")
 	d.send(tea.KeyMsg{Type: tea.KeyLeft})
-	page("Sun 01 Mar 2026 · yesterday", "late")
+	page("Sun 01 Mar 2026 · yesterday · total 30m", "late")
 	d.keys("h") // empty days are skipped
-	page("Thu 26 Feb 2026", "older")
+	page("Thu 26 Feb 2026 · total 30m", "older")
 	d.keys("h")
-	page("Thu 26 Feb 2026", "older")
+	page("Thu 26 Feb 2026 · total 30m", "older")
 	d.send(tea.KeyMsg{Type: tea.KeyRight})
-	page("Sun 01 Mar 2026 · yesterday", "late")
+	page("Sun 01 Mar 2026 · yesterday · total 30m", "late")
 
 	// Today's total counts today, whatever day is shown.
 	if bar := d.model().statusBar(); !strings.Contains(bar, "today 30m") {
@@ -494,13 +494,13 @@ func TestEntriesPageByDay(t *testing.T) {
 		t.Errorf("search result %q lacks its date", desc)
 	}
 	d.keys("esc")
-	page("Thu 26 Feb 2026", "older")
+	page("Thu 26 Feb 2026 · total 30m", "older")
 
 	// Going to an entry from elsewhere shows its day.
 	m = d.model()
 	m.entries.goTo(late)
 	d.m = m
-	page("Sun 01 Mar 2026 · yesterday", "late")
+	page("Sun 01 Mar 2026 · yesterday · total 30m", "late")
 
 	// An entry edited onto another day takes the view with it.
 	e, err := st.Entry(late)
@@ -509,5 +509,5 @@ func TestEntriesPageByDay(t *testing.T) {
 	_, err = st.SaveEntry(e)
 	must(t, err)
 	d.send(load(st)())
-	page("Thu 26 Feb 2026", "late", "older")
+	page("Thu 26 Feb 2026 · total 1h00m", "late", "older")
 }

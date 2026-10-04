@@ -270,7 +270,7 @@ func (m Model) statusBar() string {
 			timer += "  — " + truncate(t.Note, 30)
 		}
 	}
-	today := core.DayTotal(m.data.entries, m.data.timer, now, m.loc)
+	today := core.DayTotal(m.data.entries, m.data.timer, now, now, m.loc)
 	c := m.data.counts
 	var attn []string
 	for _, a := range []struct {
