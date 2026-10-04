@@ -17,6 +17,26 @@ run = "go run ./cmd/yatta"
 description = "Run all tests"
 run = "go test ./..."
 
+[tasks.test-race]
+description = "Run all tests under the race detector"
+# The race detector needs cgo; the shipped binary does not.
+env = { CGO_ENABLED = "1" }
+run = "go test -race ./..."
+
+[tasks.test-tz]
+description = "Run all tests with TZ unset, empty (UTC), and in awkward zones"
+# Code that reads time.Local, or only works in UTC, fails here. -count=1
+# because go test does not key its cache on TZ. The zones cover offsets of
+# +14 and -11 hours, a 45-minute offset, and half-hour offsets with DST.
+run = """
+set -e
+env -u TZ go test -count=1 ./...
+for tz in "" Pacific/Kiritimati Pacific/Pago_Pago Asia/Kathmandu America/St_Johns Australia/Lord_Howe; do
+  echo "TZ=$tz"
+  TZ=$tz go test -count=1 ./...
+done
+"""
+
 [tasks.vet]
 description = "Run go vet"
 run = "go vet ./..."
@@ -30,5 +50,5 @@ description = "Format code with gofmt"
 run = "golangci-lint fmt ./..."
 
 [tasks.check]
-description = "Everything CI-worthy: lint, vet, test"
-depends = ["lint", "vet", "test"]
+description = "Everything CI-worthy: lint, vet, tests (plain, race, timezones)"
+depends = ["lint", "vet", "test", "test-race", "test-tz"]

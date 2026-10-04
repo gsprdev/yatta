@@ -58,10 +58,12 @@ Press `?` for keys. Remote integrations are set up under settings (`,`); credent
 | `mise run build` | Build the `yatta` binary |
 | `mise run run` | Run yatta without leaving a binary behind |
 | `mise run test` | Run all tests |
+| `mise run test-race` | Run all tests under the race detector (needs a C compiler) |
+| `mise run test-tz` | Run all tests in several timezones |
 | `mise run vet` | Run `go vet` |
 | `mise run lint` | Run golangci-lint (config in `.golangci.yml`) |
 | `mise run fmt` | Format the code |
-| `mise run check` | Lint, vet, and test in one go |
+| `mise run check` | Lint, vet, and all three test runs in one go; what CI runs |
 
 ## Design documents
 
