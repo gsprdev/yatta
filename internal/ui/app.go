@@ -72,7 +72,7 @@ type data struct {
 
 func New(st *store.Store, connect Connector, secrets Secrets, loc *time.Location) Model {
 	m := Model{st: st, connect: connect, secrets: secrets, loc: loc, now: time.Now}
-	m.entries = newEntriesModel()
+	m.entries = newEntriesModel(loc)
 	m.picker = newPickerModel()
 	m.attention = newAttentionModel()
 	m.tasks = newTasksModel()

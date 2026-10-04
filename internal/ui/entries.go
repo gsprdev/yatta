@@ -71,7 +71,7 @@ func (i entryItem) Description() string {
 }
 func (i entryItem) FilterValue() string { return i.find }
 
-func newEntriesModel() entriesModel {
+func newEntriesModel(loc *time.Location) entriesModel {
 	l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
 	l.SetShowHelp(false)
 	l.SetShowStatusBar(false)
@@ -79,7 +79,7 @@ func newEntriesModel() entriesModel {
 	// Left and right move between days; the list pages only on pgup/pgdn.
 	l.KeyMap.PrevPage.SetKeys("pgup")
 	l.KeyMap.NextPage.SetKeys("pgdown")
-	return entriesModel{list: l}
+	return entriesModel{list: l, loc: loc}
 }
 
 // setEntries replaces the entries, keeping the shown day and selection. When
@@ -194,14 +194,19 @@ func (m entriesModel) title(now time.Time) string {
 	if m.searching {
 		return "All days"
 	}
-	title := m.day.Format("Mon 02 Jan 2006")
-	switch today := dayOf(now, m.loc); {
-	case m.day.Equal(today):
+	today := dayOf(now, m.loc)
+	day := m.day
+	if day.IsZero() { // nothing loaded yet
+		day = today
+	}
+	title := day.Format("Mon 02 Jan 2006")
+	switch {
+	case day.Equal(today):
 		title += " · today"
-	case m.day.Equal(today.AddDate(0, 0, -1)):
+	case day.Equal(today.AddDate(0, 0, -1)):
 		title += " · yesterday"
 	}
-	return title + " · total " + short(core.DayTotal(m.entries, m.timer, m.day, now, m.loc))
+	return title + " · total " + short(core.DayTotal(m.entries, m.timer, day, now, m.loc))
 }
 
 func newEntryItem(e core.TimeEntry, d data, loc *time.Location) entryItem {

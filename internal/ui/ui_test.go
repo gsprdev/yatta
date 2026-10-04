@@ -511,3 +511,17 @@ func TestEntriesPageByDay(t *testing.T) {
 	d.send(load(st)())
 	page("Thu 26 Feb 2026 · total 1h00m", "late", "older")
 }
+
+// The first frame renders before the store has loaded.
+func TestViewBeforeLoad(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "yatta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	m := New(st, nil, nil, time.FixedZone("EST", -5*3600))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	if v := updated.View(); !strings.Contains(v, "today") {
+		t.Errorf("first frame %q does not name today", v)
+	}
+}
