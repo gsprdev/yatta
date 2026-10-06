@@ -261,7 +261,7 @@ func TestEditRunningTimer(t *testing.T) {
 	m := New(st, nil, nil, time.UTC)
 	m.now = func() time.Time { return now }
 	d := &driver{t: t, m: m}
-	must(t, func() error { _, err := st.StartTimer("", started); return err }())
+	must(t, func() error { _, err := st.StartTimer("", "", started); return err }())
 	d.send(tea.WindowSizeMsg{Width: 120, Height: 30})
 	d.send(load(st)())
 
@@ -403,7 +403,7 @@ func TestEditorShortcuts(t *testing.T) {
 	}
 
 	// ctrl+t opens the task picker from a text field, and ctrl+s saves the timer.
-	must(t, func() error { _, err := st.StartTimer("", started); return err }())
+	must(t, func() error { _, err := st.StartTimer("", "", started); return err }())
 	d.send(load(st)())
 	d.keys("E")
 	key(tea.KeyTab) // start -> note
@@ -428,5 +428,31 @@ func TestEditorShortcuts(t *testing.T) {
 	key(tea.KeyCtrlS)
 	if ed := d.model().editor; d.model().mode != modeEditor || ed.err == "" || ed.focus != fieldStart {
 		t.Fatalf("future start: mode %v, err %q, focus %d", d.model().mode, ed.err, ed.focus)
+	}
+}
+
+func TestResumeCopiesTaskAndNote(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "yatta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	started := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC)
+	now := started.Add(2 * time.Hour)
+	task, err := st.SaveLocalTask(core.Task{Name: "Admin"})
+	must(t, err)
+	_, err = st.SaveEntry(core.TimeEntry{Start: started, Duration: time.Hour, TaskID: task.ID, Note: "inbox"})
+	must(t, err)
+	m := New(st, nil, nil, time.UTC)
+	m.now = func() time.Time { return now }
+	d := &driver{t: t, m: m}
+	d.send(tea.WindowSizeMsg{Width: 120, Height: 30})
+	d.send(load(st)())
+
+	d.keys("s")
+	got, err := st.Timer()
+	must(t, err)
+	if got == nil || !got.Start.Equal(now) || got.TaskID != task.ID || got.Note != "inbox" {
+		t.Fatalf("resumed timer = %+v; want task %s and note %q at %v", got, task.ID, "inbox", now)
 	}
 }

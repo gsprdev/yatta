@@ -196,7 +196,7 @@ func (m Model) onPicked(msg pickedMsg) (tea.Model, tea.Cmd) {
 	m.mode = m.pickerReturn()
 	switch msg.purpose {
 	case pickTimer:
-		return m, m.startTimer(msg.taskID, m.now())
+		return m, m.startTimer(msg.taskID, "", m.now())
 	case pickTimerTask:
 		id := msg.taskID
 		return m, m.mutate("timer task set", func(st *store.Store) error { return st.SetTimerTask(id) })

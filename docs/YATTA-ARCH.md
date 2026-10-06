@@ -323,8 +323,9 @@ func (s *Store) Tasks() ([]core.Task, error)
 func (s *Store) SaveLocalTask(t core.Task) (core.Task, error)
 func (s *Store) ReconcileRemoteTasks(integration string, fetched []core.FetchedTask) error
 
-// StartTimer stops any running timer at now (returning its entry) and starts a new one.
-func (s *Store) StartTimer(taskID string, now time.Time) (*core.TimeEntry, error)
+// StartTimer stops any running timer at now (returning its entry) and starts a
+// new one with the given task and note. Resume passes the selected entry's.
+func (s *Store) StartTimer(taskID, note string, now time.Time) (*core.TimeEntry, error)
 func (s *Store) SetTimerTask(taskID string) error
 func (s *Store) SaveTimer(t core.ActiveTimer) error // replace start, task, and note of the running timer
 func (s *Store) StopTimer(now time.Time) (*core.TimeEntry, error)
