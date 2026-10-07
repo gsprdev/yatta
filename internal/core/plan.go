@@ -38,11 +38,11 @@ func EndOfDay(t time.Time, loc *time.Location) time.Time {
 	return next.Add(-time.Nanosecond)
 }
 
-// DayTotal is the time recorded on the local calendar day containing now,
-// including the running timer. Entries crossing midnight count only their
-// portion inside the day.
-func DayTotal(entries []TimeEntry, timer *ActiveTimer, now time.Time, loc *time.Location) time.Duration {
-	l := now.In(loc)
+// DayTotal is the time recorded on the local calendar day containing day,
+// including the running timer up to now. Entries and a timer crossing
+// midnight count only their portion inside the day.
+func DayTotal(entries []TimeEntry, timer *ActiveTimer, day, now time.Time, loc *time.Location) time.Duration {
+	l := day.In(loc)
 	dayStart := time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, loc)
 	dayEnd := time.Date(l.Year(), l.Month(), l.Day()+1, 0, 0, 0, 0, loc)
 	var total time.Duration

@@ -93,8 +93,7 @@ func (m Model) updateAttention(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !ok {
 				return m, nil
 			}
-			m.entries.list.ResetFilter()
-			m.entries.selectID(it.e.ID)
+			m.entries.goTo(it.e.ID)
 			m.mode = modeEntries
 			return m, nil
 		}
