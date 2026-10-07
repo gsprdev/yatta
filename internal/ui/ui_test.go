@@ -21,14 +21,20 @@ import (
 
 // driver feeds messages to the model and runs the commands it returns,
 // feeding their results back. Commands that do not finish promptly (timer
-// ticks, cursor blinks) are dropped.
+// ticks, cursor blinks) are dropped. Like the real program, it renders the
+// first frame before any message and another after every update.
 type driver struct {
-	t *testing.T
-	m tea.Model
+	t     *testing.T
+	m     tea.Model
+	drawn bool
 }
 
 func (d *driver) send(msg tea.Msg) {
 	d.t.Helper()
+	if !d.drawn {
+		d.m.View()
+		d.drawn = true
+	}
 	queue := []tea.Msg{msg}
 	for steps := 0; len(queue) > 0; steps++ {
 		if steps > 500 {
@@ -52,6 +58,7 @@ func (d *driver) send(msg tea.Msg) {
 		}
 		var cmd tea.Cmd
 		d.m, cmd = d.m.Update(msg)
+		d.m.View()
 		queue = append(queue, run(cmd)...)
 	}
 }

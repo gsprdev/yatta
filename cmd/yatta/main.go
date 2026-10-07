@@ -61,6 +61,13 @@ func run(dbPath string, debug bool) error {
 	}
 	defer st.Close()
 
+	_, err = newProgram(st, tea.WithAltScreen()).Run()
+	return err
+}
+
+// newProgram wires the interface to the store, the keyring and the remote
+// adapters, exactly as the binary runs it. The smoke test drives it headless.
+func newProgram(st *store.Store, opts ...tea.ProgramOption) *tea.Program {
 	keys := secret.Keyring{}
 	connect := func(cfg *store.IntegrationConfig) (remote.Adapter, error) {
 		raw, err := keys.Get(cfg.KeyringKey)
@@ -74,8 +81,7 @@ func run(dbPath string, debug bool) error {
 		return newAdapter(cfg, cred)
 	}
 
-	_, err = tea.NewProgram(ui.New(st, connect, keys, time.Local), tea.WithAltScreen()).Run()
-	return err
+	return tea.NewProgram(ui.New(st, connect, keys, time.Local), opts...)
 }
 
 // dataDir is the per-user data directory: $XDG_DATA_HOME/yatta (default
