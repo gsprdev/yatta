@@ -29,7 +29,7 @@ type entriesModel struct {
 }
 
 const entryKeys = `Timer
-  space / s   resume: start a timer on the selected entry's task
+  space / s   resume: start a timer on the selected entry's task and note
   n           start a new timer (choose a task, or none)
   T           set the running timer's task
   E           edit the running timer: backdate its start, add a note, set the task
@@ -318,11 +318,11 @@ func (m Model) updateEntries(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.entries.showKeys = true
 		return m, nil
-	case " ", "s": // resume the selected entry's task
+	case " ", "s": // resume the selected entry's task and note
 		if !hasEntry {
 			return m, nil
 		}
-		return m, m.startTimer(e.TaskID, now)
+		return m, m.startTimer(e.TaskID, e.Note, now)
 	case "n":
 		m.picker.open(pickTimer, m.data, "")
 		m.mode = modePicker
@@ -391,13 +391,13 @@ func (m Model) updateEntries(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, m.entries.update(msg)
 }
 
-func (m Model) startTimer(taskID string, now time.Time) tea.Cmd {
+func (m Model) startTimer(taskID, note string, now time.Time) tea.Cmd {
 	msg := "timer started"
 	if taskID != "" {
 		msg += ": " + taskTitle(m.data.taskByID[taskID])
 	}
 	return m.mutate(msg, func(st *store.Store) error {
-		_, err := st.StartTimer(taskID, now)
+		_, err := st.StartTimer(taskID, note, now)
 		return err
 	})
 }

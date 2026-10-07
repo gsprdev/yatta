@@ -22,17 +22,18 @@ func (s *Store) Timer() (*core.ActiveTimer, error) {
 	return &core.ActiveTimer{Start: fromUnix(start), TaskID: task.String, Note: note.String}, nil
 }
 
-// StartTimer starts a timer at now against taskID ("" for no task yet). A
-// timer already running is stopped at now first; its entry, if any, is
-// returned.
-func (s *Store) StartTimer(taskID string, now time.Time) (*core.TimeEntry, error) {
+// StartTimer starts a timer at now against taskID ("" for no task yet) with
+// note ("" for none). A timer already running is stopped at now first; its
+// entry, if any, is returned.
+func (s *Store) StartTimer(taskID, note string, now time.Time) (*core.TimeEntry, error) {
 	var stopped string
 	err := s.tx(func(tx *sql.Tx) error {
 		var err error
 		if stopped, err = s.stopTimer(tx, now); err != nil {
 			return err
 		}
-		_, err = tx.Exec("INSERT INTO active_timer (id, start, task_id) VALUES (1, ?, ?)", unix(now), nullStr(taskID))
+		_, err = tx.Exec("INSERT INTO active_timer (id, start, task_id, note) VALUES (1, ?, ?, ?)",
+			unix(now), nullStr(taskID), nullStr(note))
 		return err
 	})
 	return s.entryOrNil(stopped, err)

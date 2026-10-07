@@ -340,14 +340,14 @@ func TestTimer(t *testing.T) {
 	if tm := must[*core.ActiveTimer](t)(s.Timer()); tm != nil {
 		t.Fatalf("timer running on a new database: %+v", tm)
 	}
-	if e := must[*core.TimeEntry](t)(s.StartTimer("", t0)); e != nil {
+	if e := must[*core.TimeEntry](t)(s.StartTimer("", "", t0)); e != nil {
 		t.Fatalf("starting the first timer produced an entry: %+v", e)
 	}
 	if err := s.SetTimerTask(task.ID); err != nil {
 		t.Fatal(err)
 	}
 	// Starting another timer stops the first.
-	e := must[*core.TimeEntry](t)(s.StartTimer("", t0.Add(25*time.Minute)))
+	e := must[*core.TimeEntry](t)(s.StartTimer("", "", t0.Add(25*time.Minute)))
 	if e == nil || e.TaskID != task.ID || e.Duration != 25*time.Minute || e.Upload.Phase != core.Pending {
 		t.Fatalf("switched-off entry = %+v", e)
 	}
@@ -361,7 +361,7 @@ func TestTimer(t *testing.T) {
 	if must[*core.TimeEntry](t)(s.StopTimer(t0)) != nil {
 		t.Error("stopping with no timer produced an entry")
 	}
-	must[*core.TimeEntry](t)(s.StartTimer("", t0))
+	must[*core.TimeEntry](t)(s.StartTimer("", "", t0))
 	if must[*core.TimeEntry](t)(s.StopTimer(t0)) != nil {
 		t.Error("zero-length timer produced an entry")
 	}
@@ -373,7 +373,7 @@ func TestSaveTimer(t *testing.T) {
 	if err := s.SaveTimer(core.ActiveTimer{Start: t0}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SaveTimer with no timer = %v; want ErrNotFound", err)
 	}
-	must[*core.TimeEntry](t)(s.StartTimer("", t0.Add(10*time.Minute)))
+	must[*core.TimeEntry](t)(s.StartTimer("", "", t0.Add(10*time.Minute)))
 	// Backdate the start, add a note, and choose the task in one save.
 	want := core.ActiveTimer{Start: t0, TaskID: task.ID, Note: "standup"}
 	if err := s.SaveTimer(want); err != nil {
@@ -387,8 +387,12 @@ func TestSaveTimer(t *testing.T) {
 	if e == nil || !e.Start.Equal(t0) || e.Duration != 30*time.Minute || e.Note != "standup" || e.TaskID != task.ID {
 		t.Fatalf("stopped entry = %+v", e)
 	}
-	// Clearing the note and task works, and a new timer starts without either.
-	must[*core.TimeEntry](t)(s.StartTimer(task.ID, t0))
+	// A timer can start with a task and note, as resume does.
+	must[*core.TimeEntry](t)(s.StartTimer(task.ID, "standup", t0))
+	if got := must[*core.ActiveTimer](t)(s.Timer()); got.TaskID != task.ID || got.Note != "standup" {
+		t.Fatalf("started timer = %+v; want task and note", got)
+	}
+	// Clearing the note and task works.
 	if err := s.SaveTimer(core.ActiveTimer{Start: t0}); err != nil {
 		t.Fatal(err)
 	}
