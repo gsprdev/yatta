@@ -45,6 +45,7 @@ Note that path 1 would require its own security assessment rather than inheritin
 
 - **Upload** is the standard term for sending time entries to a remote system — used as both a verb ("upload entries") and a noun ("the pending upload"). It is preferred over "submit" (which implies a formal period or contract) and "sync" (which implies bidirectionality).
 - **Aggregation** is the standard term for combining several local entries into a single remote record at upload time (e.g. one Jira worklog representing three same-day entries against the same issue). It is distinct from — and never implies — merging, editing, or deleting the underlying local entries themselves.
+- **Review** is looking back over recorded entries to check and correct them, especially before upload: one day at a time, with that day's total, and in time other groupings such as by task. Review serves the user's own record-keeping inside YATTA. It is distinct from reporting, which summarizes time for use elsewhere and is out of scope.
 
 ---
 
@@ -199,9 +200,10 @@ Aggregation is a deliberately narrow concern, separate from full cross-system ti
 | Always-visible current timer and today's running total | Mobile clients |
 | Search, filter, and resume-from-recent over entries | Cloud sync, hosted backend, or any multi-machine replication |
 | Hierarchical local task management | Browser-based interface |
+| Review of entries, one day at a time with the day's total | |
 | Finding remote tasks by their label (e.g. a ticket number) | |
 | One optional remote integration | Reading existing entries from remote |
-| Deliberate, one-way upload with optional date bound | Reporting / analytics UI beyond the current-day total |
+| Deliberate, one-way upload with optional date bound | Reporting / analytics UI (summaries of time for use outside YATTA) |
 | Rounding at upload time (stored as remote record) | Full cross-system timesheet reporting (e.g. summarizing ticketed and non-ticketed work into one NetSuite-style total) |
 | Aggregation at upload time (by task + day, into the remote record) | Scriptable or user-defined rounding rules |
 | Merged local/remote view per entry (and per aggregate group), read-only | Aggregation, merging, or editing of local records themselves |
@@ -249,6 +251,7 @@ This iteration is done when, against each of Jira, Redmine, and Toggl, a user ca
 - **A task is required only for upload.** Unassigned entries and timers are allowed and counted as needing attention, since recording first and classifying later is the lowest-friction path.
 - **Resume carries the note.** Resuming an entry copies its note to the new timer along with its task. The note is a further qualifier on the task, so the pair is what the user means to continue; and because aggregation drops duplicate notes, resumed entries rolled into one remote record contribute the note once rather than repeating it.
 - **Today's running total is in scope.** It belongs to the always-visible working surface, not to reporting.
+- **Review is in scope; reporting is not.** Showing the entries of one day with that day's total, or later grouping them by task, helps the user check and correct their own record before upload. That is review. Reporting summarizes time for consumption outside YATTA, and stays out of scope.
 - **Zero after rounding is excluded** unless a round-up minimum raises it. It gets the same sentinel as a below-minimum exclusion.
 - **Entries on departed tasks fail at upload.** They are not filtered out beforehand; the failure puts them in the error list, where the user reassigns them.
 - **Repeated uploads are independent.** Two uploads on the same day produce two records for the same task and day. This is expected, not handled.
@@ -262,4 +265,4 @@ This iteration is done when, against each of Jira, Redmine, and Toggl, a user ca
 
 ## Open Questions
 
-None at present.
+- **Review modes.** The entry list reviews one day at a time. Further review groupings are planned, starting with entries grouped by task. How the user selects among them, and what each shows beside its entries (for example, a total per group), is still to be decided.

@@ -101,24 +101,35 @@ func TestDayTotal(t *testing.T) {
 	now := at(3, 10, 0)
 	tests := []struct {
 		name    string
+		day     time.Time // zero means today
 		entries []TimeEntry
 		timer   *ActiveTimer
 		want    time.Duration
 	}{
-		{"empty", nil, nil, 0},
-		{"today only", []TimeEntry{
+		{"empty", time.Time{}, nil, nil, 0},
+		{"today only", time.Time{}, []TimeEntry{
 			entry("a", "T", at(3, 8, 0), 30*m, ""),
 			entry("b", "T", at(2, 8, 0), 30*m, ""),
 		}, nil, 30 * m},
-		{"entry crossing midnight counts its part in today", []TimeEntry{
+		{"entry crossing midnight counts its part in today", time.Time{}, []TimeEntry{
 			entry("a", "T", at(2, 23, 0), 2*time.Hour, ""),
 		}, nil, time.Hour},
-		{"running timer counts to now", nil, &ActiveTimer{Start: at(3, 9, 15)}, 45 * m},
-		{"timer started yesterday counts from midnight", nil, &ActiveTimer{Start: at(2, 22, 0)}, 10 * time.Hour},
+		{"running timer counts to now", time.Time{}, nil, &ActiveTimer{Start: at(3, 9, 15)}, 45 * m},
+		{"timer started yesterday counts from midnight", time.Time{}, nil, &ActiveTimer{Start: at(2, 22, 0)}, 10 * time.Hour},
+		{"an earlier day", at(2, 0, 0), []TimeEntry{
+			entry("a", "T", at(3, 8, 0), 30*m, ""),
+			entry("b", "T", at(2, 8, 0), 20*m, ""),
+			entry("c", "T", at(1, 23, 30), time.Hour, ""),
+		}, nil, 50 * m},
+		{"a timer running since an earlier day counts to its midnight", at(2, 12, 0), nil, &ActiveTimer{Start: at(2, 22, 0)}, 2 * time.Hour},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := DayTotal(tt.entries, tt.timer, now, ny); got != tt.want {
+			day := tt.day
+			if day.IsZero() {
+				day = now
+			}
+			if got := DayTotal(tt.entries, tt.timer, day, now, ny); got != tt.want {
 				t.Errorf("DayTotal = %v; want %v", got, tt.want)
 			}
 		})

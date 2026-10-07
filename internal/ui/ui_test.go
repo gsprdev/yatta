@@ -431,6 +431,101 @@ func TestEditorShortcuts(t *testing.T) {
 	}
 }
 
+func TestEntriesPageByDay(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "yatta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	// UTC-5: an entry at 03:00 UTC on 2 March starts on the local 1 March.
+	loc := time.FixedZone("EST", -5*3600)
+	now := time.Date(2026, 3, 2, 17, 0, 0, 0, time.UTC)
+	save := func(note string, start time.Time) string {
+		e, err := st.SaveEntry(core.TimeEntry{Start: start, Duration: 30 * time.Minute, Note: note})
+		must(t, err)
+		return e.ID
+	}
+	save("today", time.Date(2026, 3, 2, 14, 0, 0, 0, time.UTC))
+	late := save("late", time.Date(2026, 3, 2, 3, 0, 0, 0, time.UTC))
+	save("older", time.Date(2026, 2, 26, 14, 0, 0, 0, time.UTC))
+
+	m := New(st, nil, nil, loc)
+	m.now = func() time.Time { return now }
+	d := &driver{t: t, m: m}
+	d.send(tea.WindowSizeMsg{Width: 120, Height: 30})
+	d.send(load(st)())
+
+	shown := func() []string {
+		var notes []string
+		for _, it := range d.model().entries.list.VisibleItems() {
+			notes = append(notes, it.(entryItem).e.Note)
+		}
+		return notes
+	}
+	page := func(title string, notes ...string) {
+		t.Helper()
+		e := d.model().entries
+		if got := e.title(now); got != title || !reflect.DeepEqual(shown(), notes) {
+			t.Fatalf("page %q %v; want %q %v", got, shown(), title, notes)
+		}
+	}
+
+	page("Mon 02 Mar 2026 · today · total 30m", "today")
+	d.keys("l") // already on the newest day
+	page("Mon 02 Mar 2026 · today · total 30m", "today")
+	d.send(tea.KeyMsg{Type: tea.KeyLeft})
+	page("Sun 01 Mar 2026 · yesterday · total 30m", "late")
+	d.keys("h") // empty days are skipped
+	page("Thu 26 Feb 2026 · total 30m", "older")
+	d.keys("h")
+	page("Thu 26 Feb 2026 · total 30m", "older")
+	d.send(tea.KeyMsg{Type: tea.KeyRight})
+	page("Sun 01 Mar 2026 · yesterday · total 30m", "late")
+
+	// Today's total counts today, whatever day is shown.
+	if bar := d.model().statusBar(); !strings.Contains(bar, "today 30m") {
+		t.Errorf("status bar %q; want today 30m", bar)
+	}
+
+	// A search covers every day; clearing it returns to the selected entry's day.
+	d.keys("/", "o", "l", "d", "enter")
+	page("All days", "older")
+	if desc := d.model().entries.list.SelectedItem().(entryItem).Description(); !strings.HasPrefix(desc, "Thu 26 Feb") {
+		t.Errorf("search result %q lacks its date", desc)
+	}
+	d.keys("esc")
+	page("Thu 26 Feb 2026 · total 30m", "older")
+
+	// Going to an entry from elsewhere shows its day.
+	m = d.model()
+	m.entries.goTo(late)
+	d.m = m
+	page("Sun 01 Mar 2026 · yesterday · total 30m", "late")
+
+	// An entry edited onto another day takes the view with it.
+	e, err := st.Entry(late)
+	must(t, err)
+	e.Start = e.Start.AddDate(0, 0, -3)
+	_, err = st.SaveEntry(e)
+	must(t, err)
+	d.send(load(st)())
+	page("Thu 26 Feb 2026 · total 1h00m", "late", "older")
+}
+
+// The first frame renders before the store has loaded.
+func TestViewBeforeLoad(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "yatta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	m := New(st, nil, nil, time.FixedZone("EST", -5*3600))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	if v := updated.View(); !strings.Contains(v, "today") {
+		t.Errorf("first frame %q does not name today", v)
+	}
+}
+
 func TestResumeCopiesTaskAndNote(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "yatta.db"))
 	if err != nil {

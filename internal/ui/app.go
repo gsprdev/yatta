@@ -72,7 +72,7 @@ type data struct {
 
 func New(st *store.Store, connect Connector, secrets Secrets, loc *time.Location) Model {
 	m := Model{st: st, connect: connect, secrets: secrets, loc: loc, now: time.Now}
-	m.entries = newEntriesModel()
+	m.entries = newEntriesModel(loc)
 	m.picker = newPickerModel()
 	m.attention = newAttentionModel()
 	m.tasks = newTasksModel()
@@ -201,7 +201,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // refresh pushes freshly loaded data into the sub-models.
 func (m *Model) refresh() {
-	m.entries.setEntries(m.data, m.loc)
+	m.entries.setEntries(m.data, m.loc, m.now())
 	m.fillAttention()
 	m.tasks.setTasks(m.data.tasks)
 }
@@ -243,7 +243,7 @@ func (m Model) View() string {
 	case modeSettings:
 		body, help = m.settings.view(m.connection()), m.settings.help()
 	default:
-		body, help = m.entries.view(), m.entries.help()
+		body, help = m.entries.view(m.now()), m.entries.help()
 	}
 	if m.flash != "" {
 		if m.isErr {
@@ -270,7 +270,7 @@ func (m Model) statusBar() string {
 			timer += "  — " + truncate(t.Note, 30)
 		}
 	}
-	today := core.DayTotal(m.data.entries, m.data.timer, now, m.loc)
+	today := core.DayTotal(m.data.entries, m.data.timer, now, now, m.loc)
 	c := m.data.counts
 	var attn []string
 	for _, a := range []struct {
