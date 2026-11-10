@@ -4,3 +4,6 @@
 # Local credentials for live tests; never commit.
 .env
 *.env
+
+# Demo database from scripts/demo/seed.sh
+/yatta-demo.db*

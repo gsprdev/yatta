@@ -51,6 +51,12 @@ CGO_ENABLED=0 go build ./cmd/yatta
 
 Press `?` for keys. Remote integrations are set up under settings (`,`); credentials go to the OS keyring.
 
+**Redmine needs a default time-entry activity.** yatta does not choose an activity, so Redmine applies its default, and an instance with none rejects every upload with "Activity cannot be blank". A fresh install has none: set one under Administration → Enumerations → Activities (time tracking) → Default value.
+
+### Demo data
+
+`scripts/demo/seed.sh` builds a demo from scratch for screenshots and testing: a fresh Redmine in podman on port 3001 (login `admin`/`admin`) and `yatta-demo.db`, with two weeks of entries, some already uploaded and matching Redmine's time entries, plus a running timer. Add `--errors` for failed, departed, and unassigned entries. Then run `yatta --db yatta-demo.db`. It needs podman, curl, Go, and sqlite3 3.44 or newer.
+
 ### Development tasks
 
 | Command | What it does |
