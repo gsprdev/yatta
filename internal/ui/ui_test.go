@@ -551,3 +551,62 @@ func TestResumeCopiesTaskAndNote(t *testing.T) {
 		t.Fatalf("resumed timer = %+v; want task %s and note %q at %v", got, task.ID, "inbox", now)
 	}
 }
+
+func TestSummaryRollsUpTheTree(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "yatta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	// Wednesday 4 March 2026; the week starts Monday 2 March.
+	now := time.Date(2026, 3, 4, 17, 0, 0, 0, time.UTC)
+	parent, err := st.SaveLocalTask(core.Task{Name: "Client"})
+	must(t, err)
+	child, err := st.SaveLocalTask(core.Task{Name: "Build", ParentID: parent.ID})
+	must(t, err)
+	save := func(taskID string, start time.Time, d time.Duration) {
+		_, err := st.SaveEntry(core.TimeEntry{Start: start, Duration: d, TaskID: taskID})
+		must(t, err)
+	}
+	save(parent.ID, time.Date(2026, 3, 4, 9, 0, 0, 0, time.UTC), 30*time.Minute)
+	save(child.ID, time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC), time.Hour)
+	save("", time.Date(2026, 3, 4, 11, 0, 0, 0, time.UTC), 15*time.Minute)
+	save(child.ID, time.Date(2026, 2, 27, 9, 0, 0, 0, time.UTC), 2*time.Hour) // previous week
+
+	m := New(st, nil, nil, time.UTC)
+	m.now = func() time.Time { return now }
+	d := &driver{t: t, m: m}
+	d.send(tea.WindowSizeMsg{Width: 120, Height: 30})
+	d.send(load(st)())
+
+	shows := func(title string, rows ...string) {
+		t.Helper()
+		s := d.model().summary
+		var got []string
+		for _, it := range s.list.Items() {
+			got = append(got, strings.TrimSpace(it.(taskItem).title))
+		}
+		if s.title != title || !reflect.DeepEqual(got, rows) {
+			t.Fatalf("summary %q %q; want %q %q", s.title, got, title, rows)
+		}
+	}
+
+	d.keys("r")
+	if d.model().mode != modeSummary {
+		t.Fatal("r did not open the summary")
+	}
+	shows("Week of Mon 02 Mar 2026 · total 1h45m", "1h30m  Client", "1h00m    Build", "15m  (no task)")
+	d.keys("h")
+	shows("Week of Mon 23 Feb 2026 · total 2h00m", "2h00m  Client", "2h00m    Build")
+	d.keys("l") // back to this week
+	d.send(tea.KeyMsg{Type: tea.KeyTab})
+	shows("March 2026 · total 1h45m", "1h30m  Client", "1h00m    Build", "15m  (no task)")
+	d.send(tea.KeyMsg{Type: tea.KeyTab})
+	shows("All recorded time · total 3h45m", "3h30m  Client", "3h00m    Build", "15m  (no task)")
+	d.send(tea.KeyMsg{Type: tea.KeyTab})
+	shows("Wed 04 Mar 2026 · total 45m", "30m  Client", "15m  (no task)")
+	d.keys("esc")
+	if d.model().mode != modeEntries {
+		t.Fatal("esc did not return to the entries")
+	}
+}

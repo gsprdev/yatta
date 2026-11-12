@@ -46,22 +46,34 @@ func DayTotal(entries []TimeEntry, timer *ActiveTimer, day, now time.Time, loc *
 	dayStart := time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, loc)
 	dayEnd := time.Date(l.Year(), l.Month(), l.Day()+1, 0, 0, 0, 0, loc)
 	var total time.Duration
-	add := func(start, end time.Time) {
-		if start.Before(dayStart) {
-			start = dayStart
+	for _, d := range TaskTotals(entries, timer, dayStart, dayEnd, now) {
+		total += d
+	}
+	return total
+}
+
+// TaskTotals is the time recorded per task ID ("" for no task) inside
+// [from, to), including the running timer up to now. Entries and a timer
+// crossing a bound count only their portion inside. A zero from or to leaves
+// that side unbounded.
+func TaskTotals(entries []TimeEntry, timer *ActiveTimer, from, to, now time.Time) map[string]time.Duration {
+	totals := map[string]time.Duration{}
+	add := func(taskID string, start, end time.Time) {
+		if !from.IsZero() && start.Before(from) {
+			start = from
 		}
-		if end.After(dayEnd) {
-			end = dayEnd
+		if !to.IsZero() && end.After(to) {
+			end = to
 		}
 		if end.After(start) {
-			total += end.Sub(start)
+			totals[taskID] += end.Sub(start)
 		}
 	}
 	for _, e := range entries {
-		add(e.Start, e.End())
+		add(e.TaskID, e.Start, e.End())
 	}
 	if timer != nil {
-		add(timer.Start, now)
+		add(timer.TaskID, timer.Start, now)
 	}
-	return total
+	return totals
 }

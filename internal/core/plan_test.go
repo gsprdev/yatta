@@ -1,6 +1,7 @@
 package core
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -131,6 +132,36 @@ func TestDayTotal(t *testing.T) {
 			}
 			if got := DayTotal(tt.entries, tt.timer, day, now, ny); got != tt.want {
 				t.Errorf("DayTotal = %v; want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTaskTotals(t *testing.T) {
+	now := at(3, 10, 0)
+	entries := []TimeEntry{
+		entry("a", "T", at(2, 23, 0), 2*time.Hour, ""), // crosses into day 3
+		entry("b", "U", at(3, 8, 0), 30*m, ""),
+		entry("c", "", at(3, 9, 0), 15*m, ""),
+		entry("d", "T", at(1, 8, 0), time.Hour, ""),
+	}
+	timer := &ActiveTimer{Start: at(3, 9, 30), TaskID: "U"}
+	tests := []struct {
+		name     string
+		from, to time.Time
+		timer    *ActiveTimer
+		want     map[string]time.Duration
+	}{
+		{"clipped to bounds, timer counted under its task", at(3, 0, 0), at(4, 0, 0), timer,
+			map[string]time.Duration{"T": time.Hour, "U": time.Hour, "": 15 * m}},
+		{"unbounded counts everything", time.Time{}, time.Time{}, nil,
+			map[string]time.Duration{"T": 3 * time.Hour, "U": 30 * m, "": 15 * m}},
+		{"nothing in range", at(5, 0, 0), at(6, 0, 0), timer, map[string]time.Duration{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := TaskTotals(entries, tt.timer, tt.from, tt.to, now); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("TaskTotals = %v; want %v", got, tt.want)
 			}
 		})
 	}

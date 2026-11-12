@@ -24,6 +24,7 @@ const (
 	modeAttention             // failed uploads, departed tasks, unassigned entries
 	modeTasks                 // local task management
 	modeSettings              // policy, integration setup, purge
+	modeSummary               // time per task over a day, week, month, or all
 )
 
 // Connector builds the adapter for the configured integration. It returns a
@@ -52,6 +53,7 @@ type Model struct {
 	attention attentionModel
 	tasks     tasksModel
 	settings  settingsModel
+	summary   summaryModel
 
 	data     data
 	flash    string
@@ -76,6 +78,7 @@ func New(st *store.Store, connect Connector, secrets Secrets, loc *time.Location
 	m.picker = newPickerModel()
 	m.attention = newAttentionModel()
 	m.tasks = newTasksModel()
+	m.summary = newSummaryModel()
 	return m
 }
 
@@ -194,6 +197,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateTasks(msg)
 	case modeSettings:
 		return m.updateSettings(msg)
+	case modeSummary:
+		return m.updateSummary(msg)
 	default:
 		return m.updateEntries(msg)
 	}
@@ -204,6 +209,7 @@ func (m *Model) refresh() {
 	m.entries.setEntries(m.data, m.loc, m.now())
 	m.fillAttention()
 	m.tasks.setTasks(m.data.tasks)
+	m.summary.fill(m.data, m.loc, m.now())
 }
 
 func (m *Model) resize() {
@@ -215,6 +221,7 @@ func (m *Model) resize() {
 	m.picker.list.SetSize(m.width, h)
 	m.attention.list.SetSize(m.width, h)
 	m.tasks.list.SetSize(m.width, h)
+	m.summary.list.SetSize(m.width, h)
 }
 
 var (
@@ -242,6 +249,8 @@ func (m Model) View() string {
 		body, help = m.tasks.view(), m.tasks.help()
 	case modeSettings:
 		body, help = m.settings.view(m.connection()), m.settings.help()
+	case modeSummary:
+		body, help = m.summary.view(), "tab day/week/month/all · ←/→ period · / filter · esc back"
 	default:
 		body, help = m.entries.view(m.now()), m.entries.help()
 	}

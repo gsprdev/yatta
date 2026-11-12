@@ -55,7 +55,8 @@ yatta/
 │       ├── picker.go          # task tree picker
 │       ├── editor.go          # entry create/edit form
 │       ├── upload.go          # upload confirm + progress
-│       └── attention.go       # failed uploads and departed tasks
+│       ├── attention.go       # failed uploads and departed tasks
+│       └── summary.go         # time per task over a period, rolled up the tree
 └── go.mod
 ```
 
@@ -274,9 +275,10 @@ func (p Policy) Validate() error // settings are validated on load; Group and Pl
 func CombineNotes(notes []string) string
 func EndOfDay(t time.Time, loc *time.Location) time.Time // the upload bound for a chosen local date
 func DayTotal(entries []TimeEntry, timer *ActiveTimer, day, now time.Time, loc *time.Location) time.Duration
+func TaskTotals(entries []TimeEntry, timer *ActiveTimer, from, to, now time.Time) map[string]time.Duration
 ```
 
-`DayTotal` backs today's running total in the status bar and the shown day's total in the entry list header. It takes the day to total and `now` as arguments, like everything else in `core`, and counts only the part of an entry, or of the running timer up to `now`, that falls inside that local day.
+`TaskTotals` is the time per task ID (`""` for unassigned) inside `[from, to)`, counting only the part of an entry, or of the running timer up to `now`, that falls inside; a zero bound is open. It backs the summary. `DayTotal` is the sum of `TaskTotals` over one local day, so the two cannot disagree; it backs today's running total in the status bar and the shown day's total in the entry list header. Both take their bounds and `now` as arguments, like everything else in `core`.
 
 With create as the only remote operation, planning has no branch table: every unit is either uploaded or excluded. Because it is a function over values, every rounding, minimum, and day-boundary case is an ordinary table entry in a test file.
 
@@ -411,6 +413,7 @@ const (
     modeAttention           // failed uploads, departed tasks, unassigned entries
     modeTasks               // local task management
     modeSettings            // policy, integration setup, purge
+    modeSummary             // time per task over a day, week, month, or all
 )
 
 type Model struct {
@@ -422,6 +425,7 @@ type Model struct {
     attention attentionModel
     tasks     tasksModel
     settings  settingsModel
+    summary   summaryModel
 
     timer      *core.ActiveTimer
     todayTotal time.Duration
@@ -446,6 +450,7 @@ The resting view is `modeEntries` with a status bar rendered by the root model o
 | Settings | `modeSettings`: `huh` forms for the rounding and aggregation policy and for integration setup — type, address, query, account, credential (written to the keyring, never the database) — plus purge: choose a date, see the warning counts, confirm. The integration form edits the current configuration in place: every field but the token is pre-filled, and an empty token keeps the stored one while the integration type is unchanged. For Jira, the address is probed when entered, and the form then asks only for what that kind of Jira needs — an email and a scoped API token for Cloud, a personal access token for Data Center — with where to make the token, in the words of the menus the user clicks through. The menu shows the verified account, or why verification failed |
 | Remote task fetch | a background command on startup when an integration is configured, after integration setup, and on a keystroke from the resting view; never blocks the interface, and the result is reconciled into the store |
 | Upload confirmation and progress | custom; a summary of the units to upload and the below-minimum exclusions, then per-unit results streaming in while all other input is blocked |
+| Summary | `modeSummary`: `bubbles/list` over the depth-flattened task tree (the picker's flattening), each row a task's total for the period including its descendants, tasks with no time in the period omitted, unassigned time last. Tab cycles day / week (from Monday) / month / all; ←/→ step one period; `/` filters. Opens on the week of the day the entry list shows. Read-only, and nothing is exported |
 | Failed uploads, departed tasks, unassigned entries | `bubbles/list` in `modeAttention`, filtered by kind; selecting an item returns to `modeEntries` positioned on the affected entry |
 
 Flattening the task tree into a filterable list rather than building a tree widget is deliberate: filtering across a full ancestry path is a better interaction for deep hierarchies than expanding and collapsing nodes, and it reuses the component already carrying the entry list.
@@ -539,6 +544,8 @@ The database is `yatta.db` in the platform's per-user data directory: `$XDG_DATA
 
 - **The running timer is edited in the entry editor.** Backdating a start and adding a note or task are the same act as correcting an entry, so the timer reuses that form minus the end field rather than growing a second one. Saving with the start left as displayed keeps its original seconds, so adding a note never moves the start. Overlap with existing entries is not checked, consistent with the rule above.
 - **Ctrl-chords are shortcuts, never the only way.** The editor offers `ctrl+s` (save) and `ctrl+t` (choose task), but some terminals, such as certain IDE-embedded ones, do not deliver them, so everything a chord does is also reachable with plain keys: tab, arrows, and enter, with a **Save** row at the end of the editor. A validation error returns focus to the field at fault, whichever way save was requested.
+
+- **The summary is computed in memory.** Like the day pages, it totals the entries already loaded rather than querying per period: `core.TaskTotals` clips them to the period, and the interface adds each task's time to its ancestors while walking the same flattened tree the picker uses. The running timer's share is as of the last reload or period change, not ticking each second.
 
 ## Open Questions
 

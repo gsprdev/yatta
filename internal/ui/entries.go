@@ -42,6 +42,7 @@ Entries
   ← / →       previous or next day (h / l also work)
   pgup / pgdn page within a long day
   /           search every day by task, ticket label, note, or date
+  r           summary: time per task over a day, week, month, or all
 
 Elsewhere
   u           upload pending entries
@@ -292,7 +293,7 @@ func (m entriesModel) help() string {
 	if m.confirm != "" {
 		return "discard this entry? y to confirm, any other key to cancel"
 	}
-	return "space resume · n new timer · x stop · a add · e edit · ←/→ day · / search · u upload · ! attention · ? all keys"
+	return "space resume · n new timer · x stop · a add · e edit · ←/→ day · / search · r summary · u upload · ! attention · ? all keys"
 }
 
 func (m entriesModel) view(now time.Time) string {
@@ -384,6 +385,12 @@ func (m Model) updateEntries(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "t":
 		m.mode = modeTasks
+		return m, nil
+	case "r": // the summary opens on the shown day's week, or the last zoom used
+		m.summary.anchor = m.entries.day
+		m.summary.list.ResetFilter()
+		m.summary.fill(m.data, m.loc, now)
+		m.mode = modeSummary
 		return m, nil
 	case ",":
 		m.settings = newSettings(m.data, m.secrets)
