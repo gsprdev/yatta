@@ -172,6 +172,16 @@ func (m *entriesModel) goTo(id string) {
 	m.selectID(id)
 }
 
+// goToday ends any search and shows today, as when resuming work from a
+// search result: the user's intent is the present, not the entry's day.
+func (m *entriesModel) goToday(now time.Time) {
+	m.list.ResetFilter()
+	m.searching = false
+	m.day = dayOf(now, m.loc)
+	m.fill()
+	m.list.ResetSelected()
+}
+
 // update passes msg to the list. A search starts on every day's entries, and
 // once cleared returns to the day of the entry that was selected.
 func (m *entriesModel) update(msg tea.Msg) tea.Cmd {
@@ -322,7 +332,11 @@ func (m Model) updateEntries(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !hasEntry {
 			return m, nil
 		}
-		return m, m.startTimer(e.TaskID, e.Note, now)
+		cmd := m.startTimer(e.TaskID, e.Note, now)
+		if m.entries.searching {
+			m.entries.goToday(now)
+		}
+		return m, cmd
 	case "n":
 		m.picker.open(pickTimer, m.data, "")
 		m.mode = modePicker
