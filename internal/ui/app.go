@@ -261,7 +261,18 @@ func (m Model) View() string {
 			help = okStyle.Render(m.flash)
 		}
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, m.statusBar(), body, helpStyle.Render(help))
+	// Wrap the help line to the terminal width and give the body what's left,
+	// so a long help never pushes the status bar off the top or gets clipped.
+	// ponytail: trims the body's bottom row(s); resize lists per mode if that bites.
+	if m.width > 0 {
+		help = helpStyle.Width(m.width).Render(help)
+	} else {
+		help = helpStyle.Render(help)
+	}
+	if extra := lipgloss.Height(help) - 1; extra > 0 && m.height > 0 {
+		body = lipgloss.NewStyle().MaxHeight(max(m.height-1-lipgloss.Height(help), 1)).Render(body)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, m.statusBar(), body, help)
 }
 
 // statusBar is the always-visible surface: the running timer, today's total,
